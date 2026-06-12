@@ -1,0 +1,26 @@
+# Dependencies
+**/node_modules/
+
+# Build output (Nuxt)
+frontend/.output/
+frontend/.nuxt/
+frontend/dist/
+
+# Environment & secrets
+.env
+.env.local
+*.log
+
+# Generated data (feedback store)
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
