@@ -8,6 +8,7 @@ const links = [
   { path: '/qrcode', icon: '📱', label: '二维码生成' },
   { path: '/qrcode-decode', icon: '👁', label: '二维码识别' },
   { path: '/color-picker', icon: '🎨', label: '取色器' },
+  { path: '/img-compress', icon: '🖼', label: '图片压缩' },
   { path: '/fileshare', icon: '📡', label: '文件 & 消息互传' },
   { path: '/kvm', icon: '🖥', label: 'KVM 屏幕共享  🧪' },
   { path: '/feedback', icon: '💬', label: '留言反馈' },

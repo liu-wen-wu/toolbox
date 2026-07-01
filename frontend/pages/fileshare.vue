@@ -169,7 +169,7 @@ function ensurePeerConnection(peerId, shouldCreateOffer) {
   if (!pendingCandidates[peerId]) pendingCandidates[peerId] = []
 
   pc.onicecandidate = (e) => {
-    if (e.candidate) sendSignal({ candidate: e.candidate.toJSON() })
+    if (e.candidate) sendSignal(peerId, { candidate: e.candidate.toJSON() })
   }
 
   pc.ondatachannel = (e) => {
@@ -193,7 +193,7 @@ function ensurePeerConnection(peerId, shouldCreateOffer) {
     const dc = pc.createDataChannel('fileshare', { ordered: true })
     p2pPeers[peerId].dc = dc
     setupDataChannel(dc, peerId)
-    pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sendSignal(pc.localDescription))
+    pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sendSignal(peerId, pc.localDescription))
   }
 }
 
@@ -203,7 +203,7 @@ function handleSignalForPeer(fromPeerId, data) {
     pendingCandidates[fromPeerId] = []
     const pc = new RTCPeerConnection(STUN_SERVERS)
     p2pPeers[fromPeerId].pc = pc
-    pc.onicecandidate = (e) => { if (e.candidate) sendSignal({ candidate: e.candidate.toJSON() }) }
+    pc.onicecandidate = (e) => { if (e.candidate) sendSignal(fromPeerId, { candidate: e.candidate.toJSON() }) }
     pc.ondatachannel = (e) => { const dc = e.channel; p2pPeers[fromPeerId].dc = dc; setupDataChannel(dc, fromPeerId) }
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState
@@ -336,8 +336,8 @@ function leaveRoom() {
   chatMessages.value = []
 }
 
-function sendSignal(data) {
-  ws.value?.send(JSON.stringify({ type: 'signal', data }))
+function sendSignal(peerId, data) {
+  ws.value?.send(JSON.stringify({ type: 'signal', target: peerId, data }))
 }
 
 // ===== Messaging =====
@@ -354,18 +354,13 @@ function broadcastText(obj) { broadcast(JSON.stringify(obj)) }
 function sendMessage() {
   const text = chatInput.value.trim()
   if (!text) return
-  const peers = getConnectedPeerIds()
-  if (peers.length > 0) {
-    // P2P connected → send via data channel (fastest)
-    broadcastText({ t: 'm', d: text })
-  } else if (roomPeers.value.length > 0) {
-    // P2P not available (HTTP non-secure context, firewall, etc.)
-    // Try P2P broadcast first (in case data channel just opened)
-    broadcastText({ t: 'm', d: text })
-    // Also relay via WebSocket server as fallback
+  const connected = getConnectedPeerIds()
+  if (connected.length > 0 || roomPeers.value.length > 0) {
+    // 始终通过 WebSocket relay（保证所有用户都能收到）
+    // 同时通过 P2P 通道加速（如果已建立连接）
     ws.value?.send(JSON.stringify({ type: 'send-message', text }))
+    if (connected.length > 0) broadcastText({ t: 'm', d: text })
   } else {
-    // No one in room yet
     addSystemMsg('⏳ 暂无其他成员，消息将在有人加入后自动发送')
     pendingMessage = text
   }
@@ -382,8 +377,8 @@ function addLocalMessage(text) {
 }
 
 function flushPendingMessage() {
-  if (pendingMessage && getConnectedPeerIds().length > 0) {
-    broadcastText({ t: 'm', d: pendingMessage })
+  if (pendingMessage && (getConnectedPeerIds().length > 0 || roomPeers.value.length > 0)) {
+    ws.value?.send(JSON.stringify({ type: 'send-message', text: pendingMessage }))
     addSystemMsg(`✅ 暂存消息已自动发送`)
     pendingMessage = ''
   }

@@ -13,6 +13,7 @@
     "preview": "nuxt preview"
   },
   "dependencies": {
+    "jsqr": "^1.4.0",
     "nuxt": "^4.4.7",
     "vue": "latest",
     "vue-router": "latest"

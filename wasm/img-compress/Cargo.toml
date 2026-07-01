@@ -1,0 +1,18 @@
+[package]
+name = "img-compress"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+base64 = "0.22"
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true
+codegen-units = 1

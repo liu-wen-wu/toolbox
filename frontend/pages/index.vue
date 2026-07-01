@@ -6,6 +6,7 @@ const tools = [
   { href: '/qrcode', icon: '📱', title: '二维码生成', desc: '将文本、链接等任意内容生成二维码图片，支持自定义大小和纠错级别。' },
   { href: '/qrcode-decode', icon: '👁', title: '二维码识别', desc: '上传/拖拽/粘贴二维码图片，自动识别文本内容，纯本地处理。' },
   { href: '/color-picker', icon: '🎨', title: '取色器', desc: '从屏幕任意位置取色，支持 HEX、RGB、HSL 格式复制。' },
+  { href: '/img-compress', icon: '🖼', title: '图片压缩', desc: '纯本地压缩 JPEG / PNG / WebP，支持质量调节和尺寸缩放，WASM 引擎高效处理。' },
   { href: '/fileshare', icon: '📡', title: '文件互传 & 消息', desc: '创建频道，点对点直连传输文件和消息，支持多人 Mesh 互联。' },
   { href: '/kvm', icon: '🖥', title: 'KVM 屏幕共享', desc: '共享屏幕 + 远程光标 + 画板标注，WebRTC 点对点直连。' },
 ]

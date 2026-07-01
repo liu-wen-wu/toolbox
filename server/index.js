@@ -172,12 +172,23 @@ const server = http.createServer(async (req, res) => {
 
     // === HEALTH CHECK ===
     if (pathname === '/health' || (pathname === '/' && req.method === 'GET')) {
-      json(res, 200, {
-        status: 'ok',
-        uptime: process.uptime().toFixed(0) + 's',
-        rss: (process.memoryUsage().rss / 1024 / 1024).toFixed(1) + ' MB',
-        rooms: rooms.size,
-      });
+      try {
+        // Basic dependency: verify feedback data directory is readable
+        fs.accessSync(FEEDBACK_DIR, fs.constants.R_OK);
+        json(res, 200, {
+          status: 'ok',
+          uptime: process.uptime().toFixed(0) + 's',
+          rss: (process.memoryUsage().rss / 1024 / 1024).toFixed(1) + ' MB',
+          rooms: rooms.size,
+          timestamp: new Date().toISOString(),
+        });
+      } catch {
+        json(res, 503, {
+          status: 'degraded',
+          reason: 'feedback data directory not accessible',
+          timestamp: new Date().toISOString(),
+        });
+      }
       return;
     }
 

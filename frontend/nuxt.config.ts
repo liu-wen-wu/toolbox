@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
   ssr: false,
   app: {
-    baseURL: '/tools/',
+    baseURL: '/',
     head: {
       title: 'Toolbox - 开发者工具箱',
       meta: [
@@ -11,7 +11,7 @@ export default defineNuxtConfig({
         { name: 'description', content: '轻量、快速、纯浏览器端运行的开发工具集合' }
       ],
       link: [
-        { rel: 'icon', type: 'image/svg+xml', href: '/tools/favicon.svg' },
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
         { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap' }
       ]
     }

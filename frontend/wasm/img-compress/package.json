@@ -1,0 +1,15 @@
+{
+  "name": "img-compress",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "img_compress_bg.wasm",
+    "img_compress.js",
+    "img_compress.d.ts"
+  ],
+  "main": "img_compress.js",
+  "types": "img_compress.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
