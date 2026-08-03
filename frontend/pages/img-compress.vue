@@ -222,7 +222,7 @@ const showQuality = computed(() => {
 
 <template>
   <div>
-    <h1>🖼 图片压缩</h1>
+    <h1 data-index="05">图片压缩</h1>
     <p class="description">纯本地浏览器端图片压缩，支持 JPEG / PNG / WebP 格式，可选择输出格式、压缩质量和最大尺寸。</p>
 
     <div v-if="wasmError" class="inline-error">{{ wasmError }}</div>
@@ -237,7 +237,7 @@ const showQuality = computed(() => {
       @drop="onDrop"
       @click="triggerFilePicker"
     >
-      <div class="drop-icon">📁</div>
+          <div class="drop-icon">IMG</div>
       <div class="drop-text">拖拽图片到此处，或点击选择文件</div>
       <div class="drop-hint">支持 JPEG / PNG / WebP / BMP / GIF</div>
     </div>
@@ -246,7 +246,7 @@ const showQuality = computed(() => {
 
     <!-- Processing State -->
     <div v-if="original && !compressed && processing" class="tool-box" style="text-align:center;padding:40px;">
-      <div class="spin-icon">⚙</div>
+      <div class="spin-icon"></div>
       <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">正在压缩...</p>
     </div>
 
@@ -326,10 +326,10 @@ const showQuality = computed(() => {
       <!-- Actions -->
       <div class="action-bar" v-if="compressed">
         <button class="btn btn-primary" @click="download">
-          ⬇ 下载压缩图片
+          下载压缩图片
         </button>
         <button class="btn btn-secondary" @click="triggerFilePicker">
-          📂 选择其他图片
+          选择其他图片
         </button>
       </div>
     </template>

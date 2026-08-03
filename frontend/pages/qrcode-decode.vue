@@ -144,7 +144,7 @@ watch(result, (v) => {
 
 <template>
   <div>
-    <h1>👁 二维码识别</h1>
+    <h1 data-index="03">二维码识别</h1>
     <p class="description">上传图片、拖拽图片或 <kbd class="kbd">Ctrl+V</kbd> 粘贴二维码截图，自动识别文本内容，纯本地处理，图片不上传服务器。</p>
 
     <!-- Drop zone -->
@@ -158,7 +158,7 @@ watch(result, (v) => {
       style="cursor:pointer;text-align:center;padding:48px 24px;transition:all 0.25s;"
     >
       <div v-if="!loading && !result && !errorMsg" class="drop-inner">
-        <div class="drop-icon">📷</div>
+        <div class="drop-icon">QR</div>
         <div class="drop-title">选择二维码图片</div>
         <div class="drop-hint">点击上传、拖拽图片到此处，或直接粘贴截图</div>
       </div>
@@ -170,7 +170,7 @@ watch(result, (v) => {
       </div>
 
       <div v-if="errorMsg && !loading" class="drop-inner">
-        <div class="drop-icon" style="font-size:40px;">😕</div>
+        <div class="drop-icon" style="font-size:40px;">!</div>
         <div class="drop-title" style="color:var(--vp-c-red);">{{ errorMsg }}</div>
         <div class="drop-hint" style="margin-top:8px;">点击重新选择图片，或换一张试试</div>
         <button class="btn btn-secondary btn-small" style="margin-top:12px;" @click.stop="resetAll">清除</button>
@@ -179,7 +179,7 @@ watch(result, (v) => {
       <div v-if="result && !loading" class="drop-result">
         <img :src="previewUrl || undefined" class="preview-img" />
         <div class="result-badge" :class="{ url: isUrl }">
-          {{ isUrl ? '🔗 链接' : '📄 文本' }}
+          {{ isUrl ? '链接' : '文本' }}
         </div>
       </div>
 
@@ -193,16 +193,16 @@ watch(result, (v) => {
         <div class="result-text">{{ result }}</div>
         <div class="result-actions">
           <button class="btn btn-secondary btn-small" @click="copy(result)">
-            <template v-if="copied">✅ 已复制</template>
-            <template v-else>📋 复制</template>
+            <template v-if="copied">已复制</template>
+            <template v-else>复制</template>
           </button>
-          <button v-if="isUrl" class="btn btn-primary btn-small" @click="openUrl">🔍 打开链接</button>
+          <button v-if="isUrl" class="btn btn-primary btn-small" @click="openUrl">打开链接</button>
           <button class="btn btn-small" style="background:transparent;color:var(--vp-c-text-3);" @click="resetAll">
             重新识别
           </button>
         </div>
       </div>
-      <p v-if="copyError" class="error-hint">❌ {{ copyError }}</p>
+      <p v-if="copyError" class="error-hint">{{ copyError }}</p>
     </div>
 
     <!-- History -->
@@ -218,7 +218,7 @@ watch(result, (v) => {
           class="history-item"
           @click="result = item.text; isUrl = isLikelyUrl(item.text)"
         >
-          <span class="history-icon">{{ isLikelyUrl(item.text) ? '🔗' : '📄' }}</span>
+          <span class="history-icon">{{ isLikelyUrl(item.text) ? 'URL' : 'TXT' }}</span>
           <span class="history-text">{{ item.text }}</span>
           <span class="history-time">{{ item.time }}</span>
           <button class="btn btn-tiny" style="flex-shrink:0;" @click.stop="copy(item.text)">复制</button>

@@ -98,14 +98,14 @@ onMounted(() => {
   if (!eyeDropSupported.value) {
     eyeDropError.value = '当前浏览器不支持 EyeDropper API。建议使用 Chrome 95+，或使用下方的颜色选择器。'
   } else if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-    eyeDropError.value = '⚠ EyeDropper 取色功能需要 HTTPS 才能正常工作。当前为 HTTP 访问，取色按钮可能无效。你可以使用下方的颜色选择器作为替代。'
+    eyeDropError.value = 'EyeDropper 取色功能需要 HTTPS 才能正常工作。当前为 HTTP 访问，取色按钮可能无效。你可以使用下方的颜色选择器作为替代。'
   }
 })
 </script>
 
 <template>
   <div>
-    <h1>🎨 取色器</h1>
+    <h1 data-index="04">取色器</h1>
     <p class="description">从屏幕任意位置取色，支持 HEX、RGB、HSL 格式复制，自动保存取色历史。</p>
 
     <!-- HTTPS warning -->
@@ -120,10 +120,10 @@ onMounted(() => {
         <div>
           <input v-model="hex" class="input" style="width:140px;font-family:var(--font-mono);text-transform:uppercase;" maxlength="7" placeholder="#000000" @input="updateColor($event.target.value)">
           <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
-            <button class="btn btn-primary" @click="eyeDrop" title="从屏幕取色（Chrome 95+，需 HTTPS）">👁 取色</button>
-            <button class="btn btn-secondary" @click="fallbackPick" title="使用系统颜色选择器取色（所有浏览器均支持）">🎨 颜色面板</button>
-            <button class="btn btn-secondary" @click="randomColor">🎲 随机</button>
-            <button class="btn btn-secondary" @click="addToHistory" :disabled="history.includes(hex)">💾 保存</button>
+            <button class="btn btn-primary" @click="eyeDrop" title="从屏幕取色（Chrome 95+，需 HTTPS）">取色</button>
+            <button class="btn btn-secondary" @click="fallbackPick" title="使用系统颜色选择器取色（所有浏览器均支持）">颜色面板</button>
+            <button class="btn btn-secondary" @click="randomColor">随机</button>
+            <button class="btn btn-secondary" @click="addToHistory" :disabled="history.includes(hex)">保存</button>
           </div>
         </div>
       </div>
@@ -135,11 +135,11 @@ onMounted(() => {
         <div v-for="(fmt, name) in { HEX: hex, RGB: rgb, HSL: hsl }" :key="name" style="display:flex;align-items:center;gap:8px;">
           <span style="width:40px;font-size:13px;font-weight:600;color:var(--vp-c-text-3);">{{ name }}</span>
           <code style="flex:1;padding:6px 10px;background:var(--vp-c-bg-mute);border-radius:6px;font-family:var(--font-mono);font-size:13px;">{{ fmt }}</code>
-          <button class="btn btn-tiny btn-secondary" @click="clipboardCopy(fmt)">📋 复制</button>
+          <button class="btn btn-tiny btn-secondary" @click="clipboardCopy(fmt)">复制</button>
         </div>
       </div>
-      <p v-if="copied" style="margin-top:8px;font-size:12px;color:var(--vp-c-green);">✅ 已复制到剪贴板</p>
-      <p v-if="copyError" style="margin-top:8px;font-size:12px;color:var(--vp-c-red);">❌ {{ copyError }}</p>
+      <p v-if="copied" style="margin-top:8px;font-size:12px;color:var(--vp-c-green);">已复制到剪贴板</p>
+      <p v-if="copyError" style="margin-top:8px;font-size:12px;color:var(--vp-c-red);">{{ copyError }}</p>
     </div>
 
     <div v-if="history.length" class="tool-box">

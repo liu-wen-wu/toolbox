@@ -63,7 +63,7 @@ onMounted(loadFeedbacks)
 
 <template>
   <div>
-    <h1>💬 留言反馈</h1>
+    <h1 data-index="08">留言反馈</h1>
     <p class="description">遇到问题？有功能建议？欢迎留言，我们会尽快回复。</p>
 
     <!-- Submit form -->
@@ -93,7 +93,7 @@ onMounted(loadFeedbacks)
         <div v-if="resultMsg && resultType==='error'" class="error-box">{{ resultMsg }}</div>
 
         <button class="btn btn-primary" style="margin-top:12px;" :disabled="submitting || !message.trim()" @click="submitFeedback">
-          {{ submitting ? '提交中...' : '📤 提交反馈' }}
+          {{ submitting ? '提交中...' : '提交反馈' }}
         </button>
       </div>
     </div>
@@ -106,7 +106,7 @@ onMounted(loadFeedbacks)
       </label>
 
       <div v-if="!feedbacks.length" class="empty-state">
-        还没有反馈，来写第一条吧 🎉
+        还没有反馈，来写第一条吧
       </div>
 
       <div v-for="fb in feedbacks" :key="fb.id" class="feedback-item">
@@ -115,7 +115,7 @@ onMounted(loadFeedbacks)
           <span class="feedback-time">{{ new Date(fb.timestamp).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }}</span>
         </div>
         <div class="feedback-message">{{ fb.message }}</div>
-        <div v-if="fb.contact" class="feedback-contact">📞 {{ fb.contact }}</div>
+        <div v-if="fb.contact" class="feedback-contact">{{ fb.contact }}</div>
       </div>
     </div>
 

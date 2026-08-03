@@ -113,7 +113,7 @@ function handleSignaling(msg) {
       statusState.value = 'connecting'
       showStatus.value = true
       chatDisabled.value = false
-      addSystemMsg(`🔗 已加入频道 #${msg.room} (Peer #${msg.peerId})`)
+      addSystemMsg(`已加入频道 #${msg.room} (Peer #${msg.peerId})`)
       roomPeers.value = msg.peers?.map(p => p.id) || []
       if (msg.peers?.length) {
         for (const p of msg.peers) initiatePeerConnection(p.id)
@@ -122,7 +122,7 @@ function handleSignaling(msg) {
       break
 
     case 'peer-joined':
-      addSystemMsg(`📥 新成员 #${msg.peerId} 加入了频道`)
+      addSystemMsg(`新成员 #${msg.peerId} 加入了频道`)
       if (!roomPeers.value.includes(msg.peerId)) {
         roomPeers.value = [...roomPeers.value, msg.peerId]
       }
@@ -132,7 +132,7 @@ function handleSignaling(msg) {
 
     case 'peer-left':
       removePeer(msg.peerId)
-      addSystemMsg(`📤 成员 #${msg.peerId} 离开了频道`)
+      addSystemMsg(`成员 #${msg.peerId} 离开了频道`)
       roomPeers.value = roomPeers.value.filter(id => id !== msg.peerId)
       updateOnline()
       break
@@ -242,7 +242,7 @@ function setupDataChannel(dc, peerId) {
     p2pPeers[peerId].state = 'connected'
     updateOnline()
     chatDisabled.value = false
-    addSystemMsg(`🔗 与 #${peerId} 的 P2P 连接已建立`)
+    addSystemMsg(`与 #${peerId} 的 P2P 连接已建立`)
     flushCandidates(peerId)
     flushPendingMessage()
   }
@@ -287,7 +287,7 @@ function updateOnline() {
   showOnlineTag.value = peers.length > 0
   const connected = getConnectedPeerIds()
   if (peers.length > 0) {
-    statusText.value = `🟢 在线 (${peers.map(id => '#'+id).join(', ')})`
+    statusText.value = `在线 (${peers.map(id => '#'+id).join(', ')})`
     statusState.value = connected.length > 0 ? 'connected' : 'connecting'
   } else {
     statusText.value = `等待其他人加入... (你 #${myPeerId.value})`
@@ -379,7 +379,7 @@ function addLocalMessage(text) {
 function flushPendingMessage() {
   if (pendingMessage && (getConnectedPeerIds().length > 0 || roomPeers.value.length > 0)) {
     ws.value?.send(JSON.stringify({ type: 'send-message', text: pendingMessage }))
-    addSystemMsg(`✅ 暂存消息已自动发送`)
+    addSystemMsg(`暂存消息已自动发送`)
     pendingMessage = ''
   }
 }
@@ -416,7 +416,7 @@ function sendFile(file) {
   }
   const chunks = Math.ceil(file.size / CHUNK_SIZE)
   pendingSendFile = { file, chunks, peerProgress: {}, totalSent: 0, totalPeers: connected.length }
-  addSystemMsg(`📤 发送文件: ${file.name} (${formatSize(file.size)}) 给 ${connected.length} 人`)
+  addSystemMsg(`发送文件: ${file.name} (${formatSize(file.size)}) 给 ${connected.length} 人`)
   broadcastText({ t: 'fm', n: file.name, s: file.size, c: chunks })
   for (const pid of connected) {
     pendingSendFile.peerProgress[pid] = 0
@@ -445,20 +445,20 @@ function sendChunksTo(peerId) {
       const ext = file.name.split('.').pop().toLowerCase()
       if (['png','jpg','jpeg','gif','webp','svg','bmp','ico'].includes(ext)) {
         const url = URL.createObjectURL(file)
-        addSystemMsg(`📤 图片: ${file.name}`)
+        addSystemMsg(`图片: ${file.name}`)
         chatMessages.value.push({ image: true, url, name: file.name })
       }
       let allDone = true
       for (const pid in p.peerProgress) { if (p.peerProgress[pid] < chunks) { allDone = false; break } }
       if (allDone) {
-        addSystemMsg(`✅ 文件发送完成: ${file.name}`)
+        addSystemMsg(`文件发送完成: ${file.name}`)
         addSharedFile(file.name, file.size, file, true)
         setTimeout(resetFileProgress, 2000)
         pendingSendFile = null
       }
     }
   }
-  reader.onerror = () => { addSystemMsg('❌ 文件读取失败'); resetFileProgress(); pendingSendFile = null }
+  reader.onerror = () => { addSystemMsg('文件读取失败'); resetFileProgress(); pendingSendFile = null }
   function readNext() {
     const start = index * CHUNK_SIZE
     const end = Math.min(start + CHUNK_SIZE, file.size)
@@ -476,7 +476,7 @@ function updateSendProgress() {
 
 // ===== File Transfer - Receive =====
 function handleFileMeta(meta, fromPeerId) {
-  addSystemMsg(`📥 来自 #${fromPeerId}: ${meta.n} (${formatSize(meta.s)})`)
+  addSystemMsg(`来自 #${fromPeerId}: ${meta.n} (${formatSize(meta.s)})`)
   fileProgress.value = { show: true, name: `[#${fromPeerId}] ${meta.n}`, pct: 0 }
   receivingFiles[fromPeerId] = { meta, blobParts: [] }
 }
@@ -504,7 +504,7 @@ function handleFileDone(fromPeerId) {
     const url = URL.createObjectURL(blob)
     chatMessages.value.push({ image: true, url, name: `来自 #${fromPeerId}: ${meta.n}` })
   }
-  addSystemMsg(`✅ 来自 #${fromPeerId} 的文件接收完成: ${meta.n}`)
+  addSystemMsg(`来自 #${fromPeerId} 的文件接收完成: ${meta.n}`)
   delete receivingFiles[fromPeerId]
   if (Object.keys(receivingFiles).length === 0) setTimeout(resetFileProgress, 2000)
 }
@@ -580,7 +580,7 @@ async function handlePaste(e) {
       const file = new File([blob], name, { type: blob.type })
       const url = URL.createObjectURL(blob)
       chatMessages.value.push({ image: true, url, name })
-      addSystemMsg(`📤 正在发送粘贴的图片...`)
+      addSystemMsg(`正在发送粘贴的图片...`)
       sendFile(file)
       break
     }
@@ -601,7 +601,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <h1>📡 文件 &amp; 消息互传</h1>
+    <h1 data-index="06">文件 &amp; 消息互传</h1>
     <p class="description">创建或加入频道，点对点直连传输文件和消息。支持多人同时在线 Mesh 互联。</p>
 
     <!-- Room Controls -->
@@ -612,11 +612,11 @@ onUnmounted(() => {
         <span class="ws-text">{{ wsText }}</span>
       </div>
       <div class="room-controls">
-        <button class="btn btn-primary" :disabled="controlsDisabled" @click="createRoom">✨ 创建频道</button>
+        <button class="btn btn-primary" :disabled="controlsDisabled" @click="createRoom">创建频道</button>
         <div class="room-divider"><span>或</span></div>
         <div class="room-join-row">
           <input v-model="roomCode" type="text" class="room-code-input" placeholder="频道码" maxlength="4" style="text-transform:uppercase;" :disabled="controlsDisabled">
-          <button class="btn btn-secondary" :disabled="controlsDisabled" @click="joinRoom">加入 ➜</button>
+          <button class="btn btn-secondary" :disabled="controlsDisabled" @click="joinRoom">加入</button>
         </div>
       </div>
       <div v-if="roomError" class="room-error" v-html="roomError"></div>
@@ -640,7 +640,7 @@ onUnmounted(() => {
     <!-- Chat -->
     <div v-if="showStatus" class="tool-box" :style="{ display: showStatus ? 'block' : 'none' }" v-show="true">
       <div ref="messageContainer" class="chat-messages">
-        <div v-if="chatMessages.length === 0" class="chat-placeholder">连接成功后即可开始聊天和互传文件 📡</div>
+        <div v-if="chatMessages.length === 0" class="chat-placeholder">连接成功后即可开始聊天和互传文件</div>
         <div v-for="(msg, i) in chatMessages" :key="i"
           :class="['chat-msg', msg.system ? 'system' : msg.cls]"
         >
@@ -648,8 +648,8 @@ onUnmounted(() => {
           <template v-else>
             <span class="msg-text">{{ msg.text }}</span>
             <button class="msg-copy" @click="copyText(msg.text)" title="复制">
-              <template v-if="copied">✅</template>
-              <template v-else>📋</template>
+              <template v-if="copied">已复制</template>
+              <template v-else>复制</template>
             </button>
           </template>
         </div>
@@ -675,20 +675,20 @@ onUnmounted(() => {
     <!-- Shared Files -->
     <div v-if="showShared" class="tool-box">
       <div class="shared-header">
-        <label>📁 共享文件</label>
+        <label>共享文件</label>
         <span class="shared-count">{{ sharedFiles.length }} 个文件</span>
       </div>
       <div class="shared-list">
         <div v-if="sharedFiles.length === 0" style="color:var(--vp-c-text-3);font-size:14px;">暂无共享文件</div>
         <div v-for="f in [...sharedFiles].reverse()" :key="f.id" class="shared-item">
-          <span class="shared-item-icon">{{ f.fileType === 'image' ? '🖼' : f.fileType === 'text' ? '📄' : '📦' }}</span>
+          <span class="shared-item-icon">{{ f.fileType === 'image' ? 'IMG' : f.fileType === 'text' ? 'TXT' : 'BIN' }}</span>
           <div class="shared-item-info">
             <div class="shared-item-name">{{ f.name }}</div>
-            <div class="shared-item-meta">{{ f.fromMe ? '📤 发出' : '📥 收到' }} · {{ formatSize(f.size) }} · {{ new Date(f.timestamp).toLocaleTimeString() }}</div>
+            <div class="shared-item-meta">{{ f.fromMe ? '发出' : '收到' }} · {{ formatSize(f.size) }} · {{ new Date(f.timestamp).toLocaleTimeString() }}</div>
           </div>
           <div class="shared-item-actions">
-            <button v-if="f.fileType === 'image' || f.fileType === 'text'" class="btn btn-tiny" @click="previewFile(f.id)">👁 预览</button>
-            <button class="btn btn-tiny" @click="downloadFile(f.id)">⬇ 下载</button>
+            <button v-if="f.fileType === 'image' || f.fileType === 'text'" class="btn btn-tiny" @click="previewFile(f.id)">预览</button>
+            <button class="btn btn-tiny" @click="downloadFile(f.id)">下载</button>
           </div>
         </div>
       </div>
@@ -700,7 +700,7 @@ onUnmounted(() => {
         <div class="preview-modal">
           <div class="preview-header">
             <span class="preview-title">{{ previewTitle }}</span>
-            <button class="btn btn-small btn-secondary" @click="closePreview">✕ 关闭</button>
+            <button class="btn btn-small btn-secondary" @click="closePreview">关闭</button>
           </div>
           <div class="preview-body" v-html="previewContent"></div>
         </div>

@@ -119,7 +119,7 @@ function initPeer(peerId) {
 }
 
 function setupDC(dc, peerId) {
-  dc.onopen = () => { peers[peerId].state = 'connected'; addChatMsg('system', `🔗 与 #${peerId} 连接`) }
+  dc.onopen = () => { peers[peerId].state = 'connected'; addChatMsg('system', `与 #${peerId} 连接`) }
   dc.onmessage = (e) => {
     if (typeof e.data === 'string') {
       const msg = JSON.parse(e.data)
@@ -320,7 +320,7 @@ onUnmounted(() => {
   <div>
     <div class="kvm-header">
       <div>
-        <h1>🖥 KVM 屏幕共享 <span class="test-badge">🧪 测试中</span></h1>
+        <h1 data-index="07">KVM 屏幕共享 <span class="test-badge">BETA</span></h1>
         <p>共享屏幕 + 远程光标 + 画板标注，WebRTC 点对点直连</p>
       </div>
     </div>
@@ -328,10 +328,10 @@ onUnmounted(() => {
     <!-- Room Controls -->
     <div v-if="!showStatus" class="tool-box">
       <div class="room-section">
-        <button class="btn btn-primary" @click="createRoom">✨ 创建房间</button>
+        <button class="btn btn-primary" @click="createRoom">创建房间</button>
         <div class="room-divider"><span>或</span></div>
         <input v-model="roomCode" type="text" class="room-code-input" placeholder="频道码" maxlength="4" style="text-transform:uppercase;">
-        <button class="btn btn-secondary" @click="joinRoom">加入 ➜</button>
+        <button class="btn btn-secondary" @click="joinRoom">加入</button>
       </div>
       <p class="room-hint">创建房间后分享4位频道码，对方加入观看屏幕</p>
     </div>
@@ -340,9 +340,9 @@ onUnmounted(() => {
     <div v-if="showStatus" class="tool-box" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
       <span class="room-badge">#{{ roomCode }}</span>
       <span>{{ statusText }}</span>
-      <button v-if="!isSharing" class="btn btn-primary" @click="startScreenShare">🖥 共享屏幕</button>
-      <button v-if="isSharing" class="btn btn-secondary" @click="stopScreenShare" style="color:var(--vp-c-red);">⏹ 停止共享</button>
-      <button class="btn btn-secondary" @click="toggleChat">💬 聊天</button>
+      <button v-if="!isSharing" class="btn btn-primary" @click="startScreenShare">共享屏幕</button>
+      <button v-if="isSharing" class="btn btn-secondary" @click="stopScreenShare" style="color:var(--vp-c-red);">停止共享</button>
+      <button class="btn btn-secondary" @click="toggleChat">聊天</button>
       <button class="btn btn-small btn-secondary" style="margin-left:auto;" @click="leaveRoom">退出房间</button>
     </div>
 
@@ -370,7 +370,7 @@ onUnmounted(() => {
           <button v-for="tool in tools" :key="tool"
             :class="['btn btn-tiny', annotTool === tool ? 'btn-primary' : 'btn-secondary']"
             @click="annotTool = tool">
-            {{ {pen:'✏️',arrow:'➡️',rect:'⬜',circle:'⭕',text:'🔤',eraser:'🧹'}[tool] }}
+            {{ {pen:'笔',arrow:'箭头',rect:'方框',circle:'圆圈',text:'文字',eraser:'橡皮'}[tool] }}
           </button>
           <span style="margin:0 4px;color:var(--vp-c-text-3);">|</span>
           <button v-for="c in colors" :key="c"
@@ -378,13 +378,13 @@ onUnmounted(() => {
             @click="annotColor = c"
           ></button>
           <span style="margin:0 4px;color:var(--vp-c-text-3);">|</span>
-          <button class="btn btn-tiny btn-secondary" @click="clearCanvas">🗑 清空</button>
+          <button class="btn btn-tiny btn-secondary" @click="clearCanvas">清空</button>
         </div>
       </div>
 
       <!-- Chat Panel -->
       <div v-if="showChat" class="tool-box" style="width:280px;flex-shrink:0;display:flex;flex-direction:column;">
-        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">💬 聊天</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">聊天</div>
         <div class="chat-messages" style="flex:1;">
           <div v-for="(m,i) in chatMessages" :key="i" class="chat-msg system" v-text="m.text"></div>
         </div>

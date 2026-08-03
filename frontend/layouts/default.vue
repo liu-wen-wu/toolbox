@@ -3,15 +3,15 @@ const route = useRoute()
 const isDark = ref(false)
 
 const links = [
-  { path: '/', icon: '🏠', label: '首页' },
-  { path: '/url-encode', icon: '🔗', label: 'URL 编码/解码' },
-  { path: '/qrcode', icon: '📱', label: '二维码生成' },
-  { path: '/qrcode-decode', icon: '👁', label: '二维码识别' },
-  { path: '/color-picker', icon: '🎨', label: '取色器' },
-  { path: '/img-compress', icon: '🖼', label: '图片压缩' },
-  { path: '/fileshare', icon: '📡', label: '文件 & 消息互传' },
-  { path: '/kvm', icon: '🖥', label: 'KVM 屏幕共享  🧪' },
-  { path: '/feedback', icon: '💬', label: '留言反馈' },
+  { path: '/', idx: '00', label: '首页' },
+  { path: '/url-encode', idx: '01', label: 'URL 编码/解码' },
+  { path: '/qrcode', idx: '02', label: '二维码生成' },
+  { path: '/qrcode-decode', idx: '03', label: '二维码识别' },
+  { path: '/color-picker', idx: '04', label: '取色器' },
+  { path: '/img-compress', idx: '05', label: '图片压缩' },
+  { path: '/fileshare', idx: '06', label: '文件 & 消息互传' },
+  { path: '/kvm', idx: '07', label: 'KVM 屏幕共享' },
+  { path: '/feedback', idx: '08', label: '留言反馈' },
 ]
 
 function toggleTheme() {
@@ -31,16 +31,17 @@ onMounted(() => {
 <template>
   <nav class="navbar">
     <NuxtLink to="/" class="logo">
-      <div class="icon">⚒</div>
+      <div class="icon">T</div>
       <span>Toolbox</span>
+      <small>DEV-UTILS</small>
     </NuxtLink>
     <button class="theme-toggle" @click="toggleTheme">
-      {{ isDark ? '🌙 暗色' : '☀️ 亮色' }}
+      {{ isDark ? 'LIGHT' : 'DARK' }}
     </button>
   </nav>
 
   <aside class="sidebar">
-    <div class="sidebar-title">工具列表</div>
+    <div class="sidebar-title">工具列表 / TOOLS</div>
     <NuxtLink
       v-for="link in links"
       :key="link.path"
@@ -48,7 +49,8 @@ onMounted(() => {
       class="sidebar-link"
       :class="{ active: route.path === link.path }"
     >
-      {{ link.icon }} {{ link.label }}
+      <span class="idx">{{ link.idx }}</span>
+      <span>{{ link.label }}</span>
     </NuxtLink>
   </aside>
 

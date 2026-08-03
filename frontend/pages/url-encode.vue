@@ -76,7 +76,7 @@ watch(mode, convert)
 
 <template>
   <div>
-    <h1>🔗 URL 编码/解码</h1>
+    <h1 data-index="01">URL 编码/解码</h1>
     <p class="description">对 URL 参数、字符串进行编码或解码，支持连续多层解码。</p>
 
     <div class="tool-box">
@@ -92,7 +92,7 @@ watch(mode, convert)
           <textarea v-model="input" class="input" rows="6" placeholder="输入需要编码/解码的内容..."></textarea>
         </div>
         <div style="display:flex;align-items:center;padding-top:28px;">
-          <button class="btn btn-secondary" @click="swap" title="交换">⇄ 交换</button>
+          <button class="btn btn-secondary" @click="swap" title="交换">交换</button>
         </div>
         <div style="flex:1;min-width:250px;">
           <label>输出</label>
@@ -100,10 +100,10 @@ watch(mode, convert)
           <div v-if="error" class="error-box">{{ error }}</div>
           <div v-if="output" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
             <button class="btn btn-small btn-secondary" @click="copyOutput">
-              <template v-if="copied">✅ 已复制</template>
-              <template v-else>📋 复制</template>
+              <template v-if="copied">已复制</template>
+              <template v-else>复制</template>
             </button>
-            <button v-if="mode==='decode'" class="btn btn-small btn-secondary" @click="decodeMore" title="对当前结果再次解码">↺ 再解码</button>
+            <button v-if="mode==='decode'" class="btn btn-small btn-secondary" @click="decodeMore" title="对当前结果再次解码">再解码</button>
             <span v-if="decodeCount > 1" class="decode-badge">已解码 {{ decodeCount }} 层</span>
           </div>
         </div>

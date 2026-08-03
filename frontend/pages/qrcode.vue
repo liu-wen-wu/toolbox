@@ -29,7 +29,7 @@ watch(errorLevel, generateQR)
 
 <template>
   <div>
-    <h1>📱 二维码生成</h1>
+    <h1 data-index="02">二维码生成</h1>
     <p class="description">将文本、链接等任意内容生成二维码图片，支持自定义大小和纠错级别。</p>
 
     <div class="tool-box">
@@ -63,7 +63,7 @@ watch(errorLevel, generateQR)
     <div v-if="showDownload && qrDataUrl" class="tool-box" style="text-align:center;">
       <img :src="qrDataUrl" alt="QR Code" style="max-width:100%;border-radius:8px;">
       <div style="margin-top:12px;">
-        <button class="btn btn-primary" @click="downloadQR">⬇ 下载 PNG</button>
+        <button class="btn btn-primary" @click="downloadQR">下载 PNG</button>
       </div>
     </div>
   </div>
