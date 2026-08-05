@@ -82,11 +82,14 @@ function verifyGitHubSignature(rawBody, signature) {
   const algo = signature.startsWith('sha256=') ? 'sha256' : 'sha1';
   const expected = crypto.createHmac(algo, deployConfig.github_secret).update(rawBody).digest('hex');
   const received = signature.replace(/^(sha256=|sha1=)/, '');
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
+  const a = Buffer.from(expected), b = Buffer.from(received);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function parseRepo(headers, body) {
   const ua = headers['user-agent'] || '';
+  const giteaSig = headers['x-gitea-signature'] || headers['x-gogs-signature'] || '';
   if (ua.includes('GitHub-Hookshot')) {
     return {
       repo: body.repository?.full_name,
@@ -98,10 +101,20 @@ function parseRepo(headers, body) {
     return {
       repo: body.repository?.full_name,
       branch: (body.ref || '').replace('refs/heads/', ''),
-      password: body.password || ''
+      password: body.password || '',
+      giteaSignature: giteaSig
     };
   }
-  return { repo: body.repository?.full_name, branch: (body.ref || '').replace('refs/heads/', '') };
+  return { repo: body.repository?.full_name, branch: (body.ref || '').replace('refs/heads/', ''), password: body.password || '', giteaSignature: giteaSig };
+}
+
+function verifyGiteaSignature(rawBody, signature) {
+  const secret = deployConfig.gitea_secret || deployConfig.gitee_token;
+  if (!secret || !signature) return false;
+  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  const a = Buffer.from(expected), b = Buffer.from(signature);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function runDeploy(project, repo, branch) {
@@ -176,34 +189,45 @@ function probeDuration(input) {
 
 function convertVideo(input, output, params, onProgress) {
   return new Promise((resolve) => {
+    // input 为目录时按帧序列输入 (浏览器抽帧上传, 帧已缩放, 无需 fps/scale 滤镜)
+    const isFrames = fs.statSync(input, { throwIfNoEntry: false })?.isDirectory?.();
     const scale = params.width
       ? `scale=${params.width}:-2:flags=lanczos`
       : `scale='min(iw,${CONV_MAX_WIDTH})':-2:flags=lanczos`;
-    const base = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-an',
+    const base = ['-y', '-hide_banner', '-loglevel', 'error',
       '-t', String(CONV_MAX_DURATION), '-progress', 'pipe:1', '-nostats'];
     let args;
+    if (isFrames) {
+      const ext = params.lossless ? 'png' : 'jpg';
+      base.push('-framerate', String(params.fps), '-i', path.join(input, `frame_%04d.${ext}`));
+    } else {
+      base.push('-i', input, '-an');
+    }
     if (params.fmt === 'gif') {
       // 两遍调色板法: stats_mode=diff 只统计变化区域 → 色板更准、体积更小
       // sierra2_4a 抖动 → 观感最接近原片; diff_mode=rectangle 减少闪烁
+      const vf = isFrames
+        ? 'split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle'
+        : `fps=${params.fps},${scale},split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle`;
       args = [
         ...base,
-        '-vf', `fps=${params.fps},${scale},split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle`,
+        '-vf', vf,
         '-loop', '0',
         output,
       ];
     } else {
       // 动画 WebP: libwebp, 有损 / 无损
       // 无损时用 level 4 + q75: 输出仍真无损, 但避免 level6+q100 的极限压缩耗时
-      args = [
-        ...base,
-        '-vf', `fps=${params.fps},${scale}`,
+      args = [...base];
+      if (!isFrames) args.push('-vf', `fps=${params.fps},${scale}`);
+      args.push(
         '-c:v', 'libwebp',
         '-loop', '0',
         '-lossless', params.lossless ? '1' : '0',
         '-compression_level', params.lossless ? '4' : '6',
         '-q:v', params.lossless ? '75' : String(params.quality),
         output,
-      ];
+      );
     }
     const proc = spawn(FFMPEG, args);
     let errOut = '';
@@ -336,6 +360,95 @@ function handleVideo2Gif(req, res, url) {
   });
 }
 
+// 浏览器抽帧上传: body = [u32BE 帧长][帧数据]... (JPEG 或 PNG, 按 lossless 参数)
+const FRAME_MAX_COUNT = 600;   // 帧数上限 (120s @ 5fps)
+const FRAME_MAX_SIZE = 20 * 1024 * 1024;
+
+function handleFrames2Gif(req, res, url) {
+  if (convActive >= CONV_MAX_CONCURRENT) {
+    json(res, 429, { error: '服务繁忙，请稍后再试' });
+    return;
+  }
+  const params = parseConvParams(url);
+  const stamp = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const dir = path.join('/tmp', `conv-${stamp}-frames`);
+  const output = path.join('/tmp', `conv-${stamp}.${params.fmt}`);
+  const jobMatch = (url.searchParams.get('job') || '').match(/^[A-Za-z0-9-]{8,64}$/);
+  const jobId = jobMatch ? jobMatch[0] : `j-${stamp}`;
+  const setJob = (progress, status) => { convJobs.set(jobId, { progress, status, ts: Date.now() }); };
+  setJob(0, 'uploading');
+  convActive++;
+  log('conv', `frames ${params.fmt} fps=${params.fps} lossless=${params.lossless} start`);
+
+  fs.mkdirSync(dir, { recursive: true });
+  const ext = params.lossless ? 'png' : 'jpg';
+  let count = 0;
+  let buf = Buffer.alloc(0);
+  let aborted = false;
+
+  function cleanup() {
+    convActive--;
+    convJobs.delete(jobId);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.unlink(output, () => {});
+  }
+
+  req.on('data', chunk => {
+    if (aborted) return;
+    buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+    while (buf.length >= 4) {
+      const len = buf.readUInt32BE(0);
+      if (len <= 0 || len > FRAME_MAX_SIZE) {
+        aborted = true;
+        json(res, 413, { error: '帧数据异常' });
+        cleanup();
+        req.destroy();
+        return;
+      }
+      if (buf.length < 4 + len) break;
+      if (count >= FRAME_MAX_COUNT) {
+        aborted = true;
+        json(res, 413, { error: `帧数超过上限 ${FRAME_MAX_COUNT}` });
+        cleanup();
+        req.destroy();
+        return;
+      }
+      count++;
+      fs.writeFileSync(path.join(dir, `frame_${String(count).padStart(4, '0')}.${ext}`), buf.subarray(4, 4 + len));
+      buf = buf.subarray(4 + len);
+    }
+  });
+  req.on('error', () => { if (!aborted) { aborted = true; cleanup(); } });
+  req.on('end', async () => {
+    if (aborted) return;
+    if (count === 0) { json(res, 422, { error: '未收到帧数据' }); cleanup(); return; }
+    const duration = count / params.fps;
+    setJob(0, 'converting');
+    let phase2 = false;
+    let lastT = 0;
+    const err = await convertVideo(dir, output, params, (t) => {
+      if (t < lastT - 0.05) phase2 = true;
+      lastT = t;
+      const ratio = Math.min(1, Math.max(0, t / duration));
+      const p = params.fmt === 'gif' && !phase2 ? ratio * 50 : (params.fmt === 'gif' ? 50 + ratio * 50 : ratio * 100);
+      setJob(Math.round(p), 'converting');
+    });
+    if (err) { setJob(0, 'error'); json(res, 500, { error: err }); cleanup(); return; }
+    setJob(100, 'done');
+    const stat = fs.statSync(output);
+    log('conv', `frames done ${params.fmt} ${count}帧 → ${(stat.size / 1024).toFixed(0)}KB`);
+    res.writeHead(200, {
+      'Content-Type': params.fmt === 'gif' ? 'image/gif' : 'image/webp',
+      'Content-Length': stat.size,
+      'Cache-Control': 'no-store',
+    });
+    const rs = fs.createReadStream(output);
+    rs.pipe(res);
+    rs.on('end', cleanup);
+    rs.on('error', () => { res.destroy(); cleanup(); });
+  });
+}
+
 // ======================================================================
 // Helpers
 // ======================================================================
@@ -387,6 +500,13 @@ const server = http.createServer(async (req, res) => {
         const feedbacks = readFeedbacks();
         json(res, 200, { total: feedbacks.length, items: feedbacks.slice(0, 50) });
       }
+      return;
+    }
+
+    // === VIDEO2GIF FRAMES: 浏览器抽帧 → 服务器合成 ===
+    if (pathname === '/video2gif/frames') {
+      if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }); return; }
+      handleFrames2Gif(req, res, url);
       return;
     }
 
@@ -448,12 +568,18 @@ const server = http.createServer(async (req, res) => {
               log('deploy', `Invalid signature for ${info.repo}`);
               res.writeHead(403); res.end('Invalid signature'); return;
             }
+          } else if (info.giteaSignature) {
+            // Gitea: HMAC-SHA256 (X-Gitea-Signature, key = webhook secret)
+            if (!verifyGiteaSignature(rawBody, info.giteaSignature)) {
+              log('deploy', `Invalid gitea signature for ${info.repo}`);
+              res.writeHead(403); res.end('Invalid signature'); return;
+            }
           } else {
-            // Non-GitHub (Gitea/Gitee/manual): require matching secret in body
+            // 手动触发 / 其他来源: require matching secret in body
             const giteaPass = deployConfig.gitea_secret || deployConfig.gitee_token;
             const bodySecret = body.secret || body.password || '';
             if (bodySecret && (bodySecret === giteaPass || bodySecret === deployConfig.github_secret)) {
-              // Gitea webhook secret / Gitee password / manual — OK
+              // OK
             } else {
               log('deploy', `Unauthorized trigger attempt for ${info.repo}`);
               json(res, 403, { error: 'Unauthorized' }); return;

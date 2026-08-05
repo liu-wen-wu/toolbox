@@ -111,9 +111,10 @@ async function convert() {
   error.value = ''
   result.value = null
   converting.value = true
-  phase.value = 'uploading'
+  phase.value = 'extracting'
   uploadPct.value = 0
   convPct.value = 0
+  framePct.value = 0
 
   const s = settings.value
   // 前端生成 jobId, 服务端用它登记转换进度 (轮询用)
@@ -130,38 +131,32 @@ async function convert() {
   startPolling(jobId)
 
   try {
-    const blob = await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.open('POST', '/api/video2gif?' + params.toString())
-      xhr.setRequestHeader('Content-Type', original.value.file.type || 'video/mp4')
-      xhr.responseType = 'blob'
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          uploadPct.value = e.loaded / e.total
-          if (uploadPct.value >= 1) phase.value = 'converting'
-        }
+    // 优先浏览器抽帧 (上传量小 20 倍, 服务器免解码); 失败回退整文件上传
+    let body, ctype
+    try {
+      const frames = await extractFrames(original.value.file, s.fps, s.width, s.lossless)
+      body = frames.blob
+      ctype = 'application/octet-stream'
+      if (body.size < original.value.size) {
+        phase.value = 'uploading'
+        uploadPct.value = 0
+        const blob = await uploadXhr('/api/video2gif/frames?' + params.toString(), ctype, body)
+        const url = URL.createObjectURL(blob)
+        result.value = { blob, url, size: blob.size }
+        phase.value = 'done'
+        return
       }
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response)
-        else {
-          // 错误信息在 JSON blob 里
-          xhr.response.text().then(t => {
-            let msg = '转换失败'
-            try { msg = JSON.parse(t).error || msg } catch {}
-            reject(new Error(msg))
-          }).catch(() => reject(new Error('转换失败')))
-        }
-      }
-      xhr.onerror = () => reject(new Error('网络错误，请重试'))
-      xhr.send(original.value.file)
-    })
-
-    let url = URL.createObjectURL(blob)
-    result.value = {
-      blob,
-      url,
-      size: blob.size,
+      // 帧包反而更大 (极短视频) → 走整文件
+      console.log('[video2gif] frames bigger than source, fallback to full upload')
+    } catch (e) {
+      console.log('[video2gif] extract fail, fallback:', e.message)
     }
+
+    phase.value = 'uploading'
+    uploadPct.value = 0
+    const blob = await uploadXhr('/api/video2gif?' + params.toString(), original.value.file.type || 'video/mp4', original.value.file)
+    const url = URL.createObjectURL(blob)
+    result.value = { blob, url, size: blob.size }
     phase.value = 'done'
   } catch (e) {
     error.value = e.message || '转换失败'
@@ -172,9 +167,139 @@ async function convert() {
   }
 }
 
+// 统一上传 (返回响应 blob, 错误解析 JSON)
+function uploadXhr(url, contentType, body) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.setRequestHeader('Content-Type', contentType)
+    xhr.responseType = 'blob'
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        uploadPct.value = e.loaded / e.total
+        if (uploadPct.value >= 1) phase.value = 'converting'
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response)
+      else {
+        xhr.response.text().then(t => {
+          let msg = '转换失败'
+          try { msg = JSON.parse(t).error || msg } catch {}
+          reject(new Error(msg))
+        }).catch(() => reject(new Error('转换失败')))
+      }
+    }
+    xhr.onerror = () => reject(new Error('网络错误，请重试'))
+    xhr.send(body)
+  })
+}
+
+// ---- 浏览器抽帧: 播放视频按 fps 抽帧, 打包为 [u32BE 帧长][帧数据]... ----
+const framePct = ref(0)
+
+function extractFrames(file, fps, width, lossless) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'auto'
+    video.src = url
+
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d', { willReadFrequently: false })
+    const parts = []
+    let count = 0
+    let lastTime = -1
+    let busy = false
+    let pending = 0
+    let done = false
+
+    const calcSize = (vw, vh) => {
+      let w = width > 0 ? Math.min(width, vw) : Math.min(vw, 1280)
+      let h = Math.round(w * vh / vw)
+      if (h % 2) h++
+      return { w, h }
+    }
+
+    const grab = async () => {
+      pending++
+      try {
+        const { w, h } = calcSize(video.videoWidth, video.videoHeight)
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
+        ctx.drawImage(video, 0, 0, w, h)
+        const blob = await new Promise(r => canvas.toBlob(r, lossless ? 'image/png' : 'image/jpeg', lossless ? undefined : 0.9))
+        if (!blob) return
+        const head = new Uint8Array(4)
+        new DataView(head.buffer).setUint32(0, blob.size)
+        parts.push(head, blob)
+        count++
+        framePct.value = Math.min(99, Math.round(count / (video.duration * fps) * 100))
+      } finally {
+        pending--
+      }
+    }
+
+    video.ontimeupdate = () => {
+      if (done || busy) return
+      if (video.currentTime - lastTime >= 1 / fps) {
+        lastTime = video.currentTime
+        busy = true
+        grab().finally(() => { busy = false })
+      }
+    }
+
+    video.onloadedmetadata = () => {
+      if (video.duration > MAX_DURATION) {
+        URL.revokeObjectURL(url)
+        reject(new Error(`视频过长（${Math.round(video.duration)}s）`))
+      }
+      video.play().catch(() => {
+        URL.revokeObjectURL(url)
+        reject(new Error('浏览器无法播放该视频，已回退整文件上传'))
+      })
+    }
+
+    const finish = () => {
+      if (done) return
+      done = true
+      video.pause()
+      URL.revokeObjectURL(url)
+      const blob = new Blob(parts, { type: 'application/octet-stream' })
+      resolve({ blob, count })
+    }
+
+    video.onended = async () => {
+      if (video.currentTime - lastTime >= 0.3) await grab() // 补最后一帧
+      while (pending > 0) await new Promise(r => setTimeout(r, 50))
+      finish()
+    }
+    video.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('视频解码失败'))
+    }
+
+    // 超时保护: 视频时长 + 45s
+    setTimeout(() => {
+      if (!done) {
+        video.pause()
+        URL.revokeObjectURL(url)
+        reject(new Error('抽帧超时'))
+      }
+    }, (Math.min(file.size / 1024, 120) * 1000) + 45000)
+  })
+}
+
 // ---- 转换进度轮询 ----
 const convPct = ref(0)
 let pollTimer = null
+
+const barWidth = computed(() => {
+  if (phase.value === 'extracting') return framePct.value
+  if (phase.value === 'uploading') return Math.round(uploadPct.value * 100)
+  return convPct.value
+})
 
 function startPolling(jobId) {
   stopPolling()
@@ -307,11 +432,12 @@ const fmtHint = computed(() => {
       <div v-if="converting" class="tool-box" style="text-align:center;padding:40px;">
         <div class="spin-icon"></div>
         <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">
-          <template v-if="phase === 'uploading'">正在上传 {{ Math.round(uploadPct * 100) }}%</template>
+          <template v-if="phase === 'extracting'">正在解析视频 {{ framePct }}%（浏览器本地）</template>
+          <template v-else-if="phase === 'uploading'">正在上传 {{ Math.round(uploadPct * 100) }}%</template>
           <template v-else>正在转换 {{ convPct }}% ...</template>
         </p>
         <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: (phase === 'uploading' ? uploadPct * 100 : convPct) + '%' }"></div>
+          <div class="progress-fill" :style="{ width: barWidth + '%' }"></div>
         </div>
         <p class="conv-info">
           原始 {{ formatSize(original.size) }} · {{ formatDuration(original.duration) }} · {{ original.width }}×{{ original.height }}
