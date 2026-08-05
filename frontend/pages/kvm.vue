@@ -320,7 +320,7 @@ onUnmounted(() => {
   <div>
     <div class="kvm-header">
       <div>
-        <h1 data-index="07">KVM 屏幕共享 <span class="test-badge">BETA</span></h1>
+        <h1 data-index="08">KVM 屏幕共享 <span class="test-badge">BETA</span></h1>
         <p>共享屏幕 + 远程光标 + 画板标注，WebRTC 点对点直连</p>
       </div>
     </div>

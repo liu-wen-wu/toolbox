@@ -1,12 +1,13 @@
 /**
- * Unified Server — 信令 + 留言板 + 部署 Webhook
- * 合并三个 Node.js 进程为一个，节省 ~60MB 内存
+ * Unified Server — 信令 + 留言板 + 部署 Webhook + 视频转动图
+ * 合并多个 Node.js 进程为一个，节省内存
  *
  * 路由:
- *   WebSocket /ws  → 文件互传信令
- *   /feedback      → 留言板 API (GET/POST)
- *   /              → 部署 Webhook (POST) / 健康检查 (GET)
- *   /health        → 健康检查
+ *   WebSocket /ws    → 文件互传信令
+ *   /feedback        → 留言板 API (GET/POST)
+ *   /video2gif       → MP4 → GIF / 动画 WebP 转换 (POST)
+ *   /                → 部署 Webhook (POST) / 健康检查 (GET)
+ *   /health          → 健康检查
  */
 const http = require('http');
 const { WebSocketServer } = require('ws');
@@ -14,6 +15,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+
+const FFMPEG = '/usr/local/bin/ffmpeg';
 
 const PORT = 9200;
 const WS_PATH = '/ws';
@@ -120,6 +123,170 @@ function runDeploy(project, repo, branch) {
 }
 
 // ======================================================================
+// 4. 视频转动图 API (MP4 → GIF / 动画 WebP, ffmpeg 服务端转换)
+// ======================================================================
+const CONV_MAX_BYTES = 100 * 1024 * 1024;  // 上传上限 100MB
+const CONV_MAX_DURATION = 120;             // 时长上限 120s
+const CONV_MAX_WIDTH = 1280;               // 宽度上限, 防内存膨胀
+const CONV_TIMEOUT_MS = 180 * 1000;        // 转换超时 180s
+const CONV_MAX_CONCURRENT = 2;             // 并发上限
+let convActive = 0;
+
+function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
+
+function parseConvParams(url) {
+  const fmt = url.searchParams.get('fmt') === 'webp' ? 'webp' : 'gif';
+  let fps = Math.round(Number(url.searchParams.get('fps')) || (fmt === 'gif' ? 10 : 12));
+  fps = clamp(fps, 1, 30);
+  let width = Math.round(Number(url.searchParams.get('width')) || 0);
+  if (width !== 0) width = clamp(width, 16, CONV_MAX_WIDTH);
+  const lossless = url.searchParams.get('lossless') === '1';
+  let quality = Math.round(Number(url.searchParams.get('quality')) || 75);
+  quality = clamp(quality, 1, 100);
+  return { fmt, fps, width, lossless, quality };
+}
+
+// 用 ffmpeg 探测时长 (只解码 1 秒, Duration 从容器头即可读出)
+function probeDuration(input) {
+  return new Promise((resolve) => {
+    const p = spawn(FFMPEG, ['-hide_banner', '-i', input, '-t', '1', '-f', 'null', '-']);
+    let stderr = '';
+    p.stderr.on('data', d => { stderr += d.toString(); });
+    p.on('close', () => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!m) { resolve(null); return; }
+      resolve(Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]));
+    });
+    p.on('error', () => resolve(null));
+  });
+}
+
+function convertVideo(input, output, params) {
+  return new Promise((resolve) => {
+    const scale = params.width
+      ? `scale=${params.width}:-2:flags=lanczos`
+      : `scale='min(iw,${CONV_MAX_WIDTH})':-2:flags=lanczos`;
+    const base = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-an',
+      '-t', String(CONV_MAX_DURATION)];
+    let args;
+    if (params.fmt === 'gif') {
+      // 两遍调色板法: stats_mode=diff 只统计变化区域 → 色板更准、体积更小
+      // sierra2_4a 抖动 → 观感最接近原片; diff_mode=rectangle 减少闪烁
+      args = [
+        ...base,
+        '-vf', `fps=${params.fps},${scale},split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle`,
+        '-loop', '0',
+        output,
+      ];
+    } else {
+      // 动画 WebP: libwebp, 有损 / 无损
+      // 无损时用 level 4 + q75: 输出仍真无损, 但避免 level6+q100 的极限压缩耗时
+      args = [
+        ...base,
+        '-vf', `fps=${params.fps},${scale}`,
+        '-c:v', 'libwebp',
+        '-loop', '0',
+        '-lossless', params.lossless ? '1' : '0',
+        '-compression_level', params.lossless ? '4' : '6',
+        '-q:v', params.lossless ? '75' : String(params.quality),
+        output,
+      ];
+    }
+    const proc = spawn(FFMPEG, args);
+    let errOut = '';
+    proc.stderr.on('data', d => { errOut += d.toString(); });
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); }, CONV_TIMEOUT_MS);
+    proc.on('close', code => {
+      clearTimeout(timer);
+      resolve(code === 0 ? null : (errOut.trim() || 'ffmpeg 转换失败'));
+    });
+    proc.on('error', e => { clearTimeout(timer); resolve('无法启动 ffmpeg: ' + e.message); });
+  });
+}
+
+function handleVideo2Gif(req, res, url) {
+  if (convActive >= CONV_MAX_CONCURRENT) {
+    json(res, 429, { error: '服务繁忙，请稍后再试' });
+    return;
+  }
+  const params = parseConvParams(url);
+  const stamp = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const input = path.join('/tmp', `conv-${stamp}.mp4`);
+  const output = path.join('/tmp', `conv-${stamp}.${params.fmt}`);
+  convActive++;
+  log('conv', `${params.fmt} fps=${params.fps} w=${params.width || 'auto'} lossless=${params.lossless} start`);
+
+  let received = 0;
+  let aborted = false;
+  const ws = fs.createWriteStream(input);
+  // 中止时 destroy 可能触发 writev error, 吞噬即可 (文件作废)
+  ws.on('error', () => {});
+
+  function cleanup() {
+    convActive--;
+    fs.unlink(input, () => {});
+    fs.unlink(output, () => {});
+    ws.destroy();
+  }
+
+  req.on('data', c => {
+    if (aborted) return;
+    received += c.length;
+    if (received > CONV_MAX_BYTES) {
+      aborted = true;
+      const body = JSON.stringify({ error: '文件过大，最大支持 100MB' });
+      res.writeHead(413, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      res.on('finish', () => req.destroy());
+      cleanup();
+      return;
+    }
+    ws.write(c);
+  });
+  req.on('error', () => { if (!aborted) { aborted = true; cleanup(); } });
+  req.on('end', async () => {
+    if (aborted) return;
+    await new Promise(r => ws.end(r));
+    try {
+      const duration = await probeDuration(input);
+      if (duration === null) {
+        json(res, 422, { error: '无法解析视频，请确认是有效的 MP4 文件' });
+        cleanup(); return;
+      }
+      if (duration > CONV_MAX_DURATION) {
+        json(res, 422, { error: `视频过长（${Math.round(duration)}s），最大支持 ${CONV_MAX_DURATION} 秒` });
+        cleanup(); return;
+      }
+      const err = await convertVideo(input, output, params);
+      if (err) { json(res, 500, { error: err }); cleanup(); return; }
+      const stat = fs.statSync(output);
+      const info = JSON.stringify({
+        inSize: received, outSize: stat.size,
+        duration: Math.round(duration * 10) / 10,
+        fps: params.fps, lossless: params.lossless, fmt: params.fmt,
+      });
+      log('conv', `done ${params.fmt} ${Math.round(duration)}s → ${(stat.size / 1024).toFixed(0)}KB`);
+      res.writeHead(200, {
+        'Content-Type': params.fmt === 'gif' ? 'image/gif' : 'image/webp',
+        'Content-Length': stat.size,
+        'Cache-Control': 'no-store',
+        'X-Convert-Info': info,
+      });
+      const rs = fs.createReadStream(output);
+      rs.pipe(res);
+      rs.on('end', cleanup);
+      rs.on('error', () => { res.destroy(); cleanup(); });
+    } catch (e) {
+      json(res, 500, { error: e.message || '转换失败' });
+      cleanup();
+    }
+  });
+}
+
+// ======================================================================
 // Helpers
 // ======================================================================
 function json(res, status, data) {
@@ -167,6 +334,13 @@ const server = http.createServer(async (req, res) => {
         const feedbacks = readFeedbacks();
         json(res, 200, { total: feedbacks.length, items: feedbacks.slice(0, 50) });
       }
+      return;
+    }
+
+    // === VIDEO2GIF: MP4 → GIF / 动画 WebP ===
+    if (pathname === '/video2gif') {
+      if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }); return; }
+      handleVideo2Gif(req, res, url);
       return;
     }
 

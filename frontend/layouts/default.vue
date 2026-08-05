@@ -9,9 +9,10 @@ const links = [
   { path: '/qrcode-decode', idx: '03', label: '二维码识别' },
   { path: '/color-picker', idx: '04', label: '取色器' },
   { path: '/img-compress', idx: '05', label: '图片压缩' },
-  { path: '/fileshare', idx: '06', label: '文件 & 消息互传' },
-  { path: '/kvm', idx: '07', label: 'KVM 屏幕共享' },
-  { path: '/feedback', idx: '08', label: '留言反馈' },
+  { path: '/video2gif', idx: '06', label: 'MP4 转动图' },
+  { path: '/fileshare', idx: '07', label: '文件 & 消息互传' },
+  { path: '/kvm', idx: '08', label: 'KVM 屏幕共享' },
+  { path: '/feedback', idx: '09', label: '留言反馈' },
 ]
 
 function toggleTheme() {

@@ -601,7 +601,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <h1 data-index="06">文件 &amp; 消息互传</h1>
+    <h1 data-index="07">文件 &amp; 消息互传</h1>
     <p class="description">创建或加入频道，点对点直连传输文件和消息。支持多人同时在线 Mesh 互联。</p>
 
     <!-- Room Controls -->
