@@ -103,7 +103,7 @@ async function loadVideo(file) {
     return
   }
   original.value = { file, url, size: file.size, ...meta }
-  convert()
+  // 不再自动转换 — 用户确认设置后手动点「开始转换」
 }
 
 async function convert() {
@@ -343,12 +343,60 @@ const fmtHint = computed(() => {
     ? '无损 WebP 完全保留画面细节，但体积较大；动图场景推荐有损模式'
     : '动画 WebP 支持真彩色，同清晰度下体积通常比 GIF 小 40-60%'
 })
+
+// 配置变更后, 旧转换结果失效 (需重新转换)
+watch(settings, () => {
+  if (result.value) result.value = null
+}, { deep: true })
 </script>
 
 <template>
   <div>
     <h1 data-index="06">MP4 转动图</h1>
-    <p class="description">将 MP4 视频转换为 GIF 或动画 WebP，服务端 ffmpeg 高效转换，WebP 支持无损模式。</p>
+    <p class="description">将 MP4 视频转换为 GIF 或动画 WebP，服务端 ffmpeg 高效转换，WebP 支持无损模式。先选配置，再传视频，确认后转换。</p>
+
+    <!-- Settings (始终可见, 先选配置) -->
+    <div class="tool-box">
+      <label>转换设置</label>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <span class="setting-label">输出格式</span>
+          <select v-model="settings.fmt" class="input setting-select">
+            <option v-for="f in fmtOptions" :key="f.value" :value="f.value">{{ f.label }}</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <span class="setting-label">帧率 FPS</span>
+          <div class="slider-row">
+            <input type="range" v-model.number="settings.fps" min="1" max="30" class="slider">
+            <span class="slider-val">{{ settings.fps }}</span>
+          </div>
+          <span class="setting-unit">动图常用 10-15，越低体积越小</span>
+        </div>
+        <div class="setting-item">
+          <span class="setting-label">输出宽度</span>
+          <select v-model.number="settings.width" class="input setting-select">
+            <option v-for="w in widthOptions" :key="w.value" :value="w.value">{{ w.label }}</option>
+          </select>
+        </div>
+        <div class="setting-item" v-if="settings.fmt === 'webp'">
+          <span class="setting-label">无损模式</span>
+          <label class="toggle-row">
+            <input type="checkbox" v-model="settings.lossless" class="toggle-input">
+            <span class="toggle-box"></span>
+            <span>{{ settings.lossless ? '已开启 · 完全保留细节' : '已关闭 · 有损压缩' }}</span>
+          </label>
+        </div>
+        <div class="setting-item" v-if="showQuality">
+          <span class="setting-label">质量</span>
+          <div class="slider-row">
+            <input type="range" v-model.number="settings.quality" min="1" max="100" class="slider">
+            <span class="slider-val">{{ settings.quality }}</span>
+          </div>
+        </div>
+      </div>
+      <p class="fmt-hint">{{ fmtHint }}</p>
+    </div>
 
     <!-- Drop Zone -->
     <div
@@ -385,48 +433,30 @@ const fmtHint = computed(() => {
         </span>
       </div>
 
-      <!-- Settings -->
-      <div class="tool-box">
-        <label>转换设置</label>
-        <div class="settings-grid">
-          <div class="setting-item">
-            <span class="setting-label">输出格式</span>
-            <select v-model="settings.fmt" class="input setting-select">
-              <option v-for="f in fmtOptions" :key="f.value" :value="f.value">{{ f.label }}</option>
-            </select>
+      <!-- 待转换: 原视频预览 + 开始按钮 -->
+      <template v-if="!converting && !result">
+        <div class="tool-box compare-card">
+          <label>原始视频</label>
+          <div class="img-wrap">
+            <video :src="original.url" muted controls playsinline></video>
           </div>
-          <div class="setting-item">
-            <span class="setting-label">帧率 FPS</span>
-            <div class="slider-row">
-              <input type="range" v-model.number="settings.fps" min="1" max="30" class="slider">
-              <span class="slider-val">{{ settings.fps }}</span>
-            </div>
-            <span class="setting-unit">动图常用 10-15，越低体积越小</span>
-          </div>
-          <div class="setting-item">
-            <span class="setting-label">输出宽度</span>
-            <select v-model.number="settings.width" class="input setting-select">
-              <option v-for="w in widthOptions" :key="w.value" :value="w.value">{{ w.label }}</option>
-            </select>
-          </div>
-          <div class="setting-item" v-if="settings.fmt === 'webp'">
-            <span class="setting-label">无损模式</span>
-            <label class="toggle-row">
-              <input type="checkbox" v-model="settings.lossless" class="toggle-input">
-              <span class="toggle-box"></span>
-              <span>{{ settings.lossless ? '已开启 · 完全保留细节' : '已关闭 · 有损压缩' }}</span>
-            </label>
-          </div>
-          <div class="setting-item" v-if="showQuality">
-            <span class="setting-label">质量</span>
-            <div class="slider-row">
-              <input type="range" v-model.number="settings.quality" min="1" max="100" class="slider">
-              <span class="slider-val">{{ settings.quality }}</span>
-            </div>
+          <div class="img-meta">
+            <span>{{ original.width }} × {{ original.height }}</span>
+            <span class="meta-dot">·</span>
+            <span>{{ formatDuration(original.duration) }}</span>
+            <span class="meta-dot">·</span>
+            <span>{{ formatSize(original.size) }}</span>
           </div>
         </div>
-        <p class="fmt-hint">{{ fmtHint }}</p>
-      </div>
+        <div class="action-bar">
+          <button class="btn btn-primary" @click="convert">
+            开始转换
+          </button>
+          <button class="btn btn-secondary" @click="triggerFilePicker">
+            更换视频
+          </button>
+        </div>
+      </template>
 
       <!-- Converting State -->
       <div v-if="converting" class="tool-box" style="text-align:center;padding:40px;">
