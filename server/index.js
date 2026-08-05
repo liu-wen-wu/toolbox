@@ -140,7 +140,10 @@ const CONV_MAX_DURATION = 120;             // 时长上限 120s
 const CONV_MAX_WIDTH = 1280;               // 宽度上限, 防内存膨胀
 const CONV_TIMEOUT_MS = 180 * 1000;        // 转换超时 180s
 const CONV_MAX_CONCURRENT = 2;             // 并发上限
+const CONV_JOB_TTL = 10 * 60 * 1000;       // 进度 job 存活 10 分钟
 let convActive = 0;
+// 转换进度: jobId -> { progress: 0-100, status, ts }
+const convJobs = new Map();
 
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
 
@@ -171,13 +174,13 @@ function probeDuration(input) {
   });
 }
 
-function convertVideo(input, output, params) {
+function convertVideo(input, output, params, onProgress) {
   return new Promise((resolve) => {
     const scale = params.width
       ? `scale=${params.width}:-2:flags=lanczos`
       : `scale='min(iw,${CONV_MAX_WIDTH})':-2:flags=lanczos`;
     const base = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input, '-an',
-      '-t', String(CONV_MAX_DURATION)];
+      '-t', String(CONV_MAX_DURATION), '-progress', 'pipe:1', '-nostats'];
     let args;
     if (params.fmt === 'gif') {
       // 两遍调色板法: stats_mode=diff 只统计变化区域 → 色板更准、体积更小
@@ -205,6 +208,23 @@ function convertVideo(input, output, params) {
     const proc = spawn(FFMPEG, args);
     let errOut = '';
     proc.stderr.on('data', d => { errOut += d.toString(); });
+    // 进度上报: ffmpeg -progress 输出 out_time_us (微秒) / out_time_ms (毫秒)
+    if (typeof onProgress === 'function') {
+      let buf = '';
+      proc.stdout.on('data', d => {
+        buf += d.toString();
+        let idx;
+        while ((idx = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          const m = line.match(/^out_time_(us|ms)=(\d+)$/);
+          if (m) {
+            const v = Number(m[2]);
+            onProgress(m[1] === 'us' ? v / 1e6 : v / 1e3);
+          }
+        }
+      });
+    }
     const timer = setTimeout(() => { proc.kill('SIGKILL'); }, CONV_TIMEOUT_MS);
     proc.on('close', code => {
       clearTimeout(timer);
@@ -223,6 +243,13 @@ function handleVideo2Gif(req, res, url) {
   const stamp = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   const input = path.join('/tmp', `conv-${stamp}.mp4`);
   const output = path.join('/tmp', `conv-${stamp}.${params.fmt}`);
+  // 进度 job (前端轮询用); 前端传入 job 参数, 否则内部生成
+  const jobMatch = (url.searchParams.get('job') || '').match(/^[A-Za-z0-9-]{8,64}$/);
+  const jobId = jobMatch ? jobMatch[0] : `j-${stamp}`;
+  const setJob = (progress, status) => {
+    convJobs.set(jobId, { progress, status, ts: Date.now() });
+  };
+  setJob(0, 'uploading');
   convActive++;
   log('conv', `${params.fmt} fps=${params.fps} w=${params.width || 'auto'} lossless=${params.lossless} start`);
 
@@ -234,6 +261,7 @@ function handleVideo2Gif(req, res, url) {
 
   function cleanup() {
     convActive--;
+    convJobs.delete(jobId);
     fs.unlink(input, () => {});
     fs.unlink(output, () => {});
     ws.destroy();
@@ -270,8 +298,20 @@ function handleVideo2Gif(req, res, url) {
         json(res, 422, { error: `视频过长（${Math.round(duration)}s），最大支持 ${CONV_MAX_DURATION} 秒` });
         cleanup(); return;
       }
-      const err = await convertVideo(input, output, params);
-      if (err) { json(res, 500, { error: err }); cleanup(); return; }
+      setJob(0, 'converting');
+      // GIF 两遍调色板: 第一遍 0-50%, 第二遍 50-100% (out_time 回退表示进入第二遍)
+      // WebP 单遍: 0-100%
+      let phase2 = false;
+      let lastT = 0;
+      const err = await convertVideo(input, output, params, (t) => {
+        if (t < lastT - 0.05) phase2 = true;
+        lastT = t;
+        const ratio = Math.min(1, Math.max(0, t / duration));
+        const p = params.fmt === 'gif' && !phase2 ? ratio * 50 : (params.fmt === 'gif' ? 50 + ratio * 50 : ratio * 100);
+        setJob(Math.round(p), 'converting');
+      });
+      if (err) { setJob(0, 'error'); json(res, 500, { error: err }); cleanup(); return; }
+      setJob(100, 'done');
       const stat = fs.statSync(output);
       const info = JSON.stringify({
         inSize: received, outSize: stat.size,
@@ -347,6 +387,20 @@ const server = http.createServer(async (req, res) => {
         const feedbacks = readFeedbacks();
         json(res, 200, { total: feedbacks.length, items: feedbacks.slice(0, 50) });
       }
+      return;
+    }
+
+    // === VIDEO2GIF 进度查询 ===
+    if (pathname === '/video2gif/progress') {
+      if (req.method !== 'GET') { json(res, 405, { error: 'Method not allowed' }); return; }
+      const job = (url.searchParams.get('job') || '').match(/^[A-Za-z0-9-]{8,64}$/)?.[0];
+      const j = job ? convJobs.get(job) : null;
+      if (!j || Date.now() - j.ts > CONV_JOB_TTL) {
+        if (job) convJobs.delete(job);
+        json(res, 404, { error: 'Job not found' });
+        return;
+      }
+      json(res, 200, { progress: j.progress, status: j.status });
       return;
     }
 

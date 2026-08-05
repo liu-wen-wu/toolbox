@@ -15,8 +15,8 @@ const result = ref(null) // { blob, url, size, info }
 
 const settings = ref({
   fmt: 'gif',
-  fps: 12,
-  width: 0,
+  fps: 10,
+  width: 640,
   lossless: false,
   quality: 75,
 })
@@ -102,7 +102,7 @@ async function loadVideo(file) {
     error.value = `视频过长（${Math.round(meta.duration)}s），最大支持 ${MAX_DURATION} 秒`
     return
   }
-  original.value = { file, url, ...meta }
+  original.value = { file, url, size: file.size, ...meta }
   convert()
 }
 
@@ -113,15 +113,21 @@ async function convert() {
   converting.value = true
   phase.value = 'uploading'
   uploadPct.value = 0
+  convPct.value = 0
 
   const s = settings.value
+  // 前端生成 jobId, 服务端用它登记转换进度 (轮询用)
+  const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
   const params = new URLSearchParams({
     fmt: s.fmt,
     fps: String(s.fps),
     width: String(s.width),
     lossless: s.lossless ? '1' : '0',
     quality: String(s.quality),
+    job: jobId,
   })
+
+  startPolling(jobId)
 
   try {
     const blob = await new Promise((resolve, reject) => {
@@ -162,8 +168,32 @@ async function convert() {
     phase.value = 'idle'
   } finally {
     converting.value = false
+    stopPolling()
   }
 }
+
+// ---- 转换进度轮询 ----
+const convPct = ref(0)
+let pollTimer = null
+
+function startPolling(jobId) {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch(`/api/video2gif/progress?job=${jobId}`, { cache: 'no-store' })
+      if (!r.ok) return // 404 → job 已清理, 等 XHR 结果即可
+      const d = await r.json()
+      convPct.value = d.progress || 0
+      if (d.status === 'converting' && phase.value === 'uploading') phase.value = 'converting'
+    } catch { /* 网络抖动忽略 */ }
+  }, 500)
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+onUnmounted(stopPolling)
 
 function download() {
   if (!result.value) return
@@ -216,6 +246,20 @@ const fmtHint = computed(() => {
     <div v-if="error" class="inline-error">{{ error }}</div>
 
     <template v-if="original">
+      <!-- Original file info -->
+      <div class="tool-box file-info">
+        <span class="fi-name">{{ original.file.name }}</span>
+        <span class="fi-sep">·</span>
+        <span>{{ formatSize(original.size) }}</span>
+        <span class="fi-sep">·</span>
+        <span>{{ original.width }} × {{ original.height }}</span>
+        <span class="fi-sep">·</span>
+        <span>{{ formatDuration(original.duration) }}</span>
+        <span class="fi-actions">
+          <button class="btn btn-secondary btn-small" @click="triggerFilePicker">更换视频</button>
+        </span>
+      </div>
+
       <!-- Settings -->
       <div class="tool-box">
         <label>转换设置</label>
@@ -264,11 +308,15 @@ const fmtHint = computed(() => {
         <div class="spin-icon"></div>
         <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">
           <template v-if="phase === 'uploading'">正在上传 {{ Math.round(uploadPct * 100) }}%</template>
-          <template v-else>正在转换... 视频越长越慢，请稍候</template>
+          <template v-else>正在转换 {{ convPct }}% ...</template>
         </p>
-        <div v-if="phase === 'uploading'" class="progress-bar">
-          <div class="progress-fill" :style="{ width: (uploadPct * 100) + '%' }"></div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: (phase === 'uploading' ? uploadPct * 100 : convPct) + '%' }"></div>
         </div>
+        <p class="conv-info">
+          原始 {{ formatSize(original.size) }} · {{ formatDuration(original.duration) }} · {{ original.width }}×{{ original.height }}
+          → {{ settings.fmt === 'gif' ? 'GIF' : 'WebP' }} {{ settings.fps }}fps
+        </p>
       </div>
 
       <!-- Comparison -->
@@ -361,6 +409,39 @@ const fmtHint = computed(() => {
   font-size: 12px;
   color: var(--vp-c-text-4);
   margin-top: 8px;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.fi-name {
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fi-sep {
+  color: var(--vp-c-text-4);
+}
+.fi-actions {
+  margin-left: auto;
+}
+
+.conv-info {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--vp-c-text-4);
 }
 
 .settings-grid {
