@@ -474,7 +474,7 @@ setInterval(() => {
   } catch {}
 }, 5 * 60 * 1000);
 
-// 探测时长 + 分辨率 (ffmpeg 读容器头, 只解码 1 秒)
+// 探测时长 + 分辨率 + 帧率 (ffmpeg 读容器头, 只解码 1 秒)
 function probeMeta(input) {
   return new Promise((resolve) => {
     const p = spawn(FFMPEG, ['-hide_banner', '-i', input, '-t', '1', '-f', 'null', '-']);
@@ -485,10 +485,13 @@ function probeMeta(input) {
       if (!dm) { resolve(null); return; }
       const duration = Number(dm[1]) * 3600 + Number(dm[2]) * 60 + Number(dm[3]);
       const vm = stderr.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+      // 源帧率: 优先 fps 字段 (VFR 时可能缺失), 回退 tbr; 两者皆无则 null
+      const fpsMatch = stderr.match(/Video:.*?(\d+(?:\.\d+)?)\s*(?:fps|tbr)/);
       resolve({
         duration,
         width: vm ? Number(vm[1]) : null,
         height: vm ? Number(vm[2]) : null,
+        fps: fpsMatch ? Number(fpsMatch[1]) : null,
       });
     });
     p.on('error', () => resolve(null));
@@ -592,6 +595,11 @@ function handleConvert(req, res, url) {
         if (meta.duration > CONV_MAX_DURATION) {
           json(res, 422, { error: `视频过长（${Math.round(meta.duration)}s），最大支持 ${CONV_MAX_DURATION} 秒` });
           cleanup(); return;
+        }
+        // 输出帧率不能超过源帧率 (前端已钳制, 服务端兜底防绕过)
+        if (meta.fps) {
+          const srcFps = Math.max(1, Math.round(meta.fps));
+          if (params.fps > srcFps) params.fps = srcFps;
         }
         // GIF 两遍调色板: 第一遍 0-50%, 第二遍 50-100% (out_time 回退表示进入第二遍)
         // WebP 单遍: 0-100%

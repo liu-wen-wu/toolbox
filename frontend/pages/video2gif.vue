@@ -12,10 +12,17 @@ const phase = ref('idle')
 const fileId = ref('')         // 服务器保存的上传文件 ID (转换复用, 重转不重传)
 const uploadFailed = ref(false)
 
-// Original video: 本地预览 + 服务器解析的元数据 (duration/width/height 解析后填充)
+// Original video: 本地预览 + 服务器解析的元数据 (duration/width/height/fps 解析后填充)
 const original = ref(null)
 // Converted result
 const result = ref(null) // { blob, url, size, info }
+
+// 输出帧率上限: 不超过源视频帧率 (源帧率未知时按 30)
+const maxFps = computed(() => {
+  const src = original.value && original.value.fps
+  if (!src) return 30
+  return Math.min(30, Math.max(1, Math.round(src)))
+})
 
 const settings = ref({
   fmt: 'gif',
@@ -129,6 +136,9 @@ async function parseVideo(token) {
     original.value.duration = d.duration
     original.value.width = d.width
     original.value.height = d.height
+    original.value.fps = d.fps
+    // 输出帧率不能超过源视频帧率, 自动钳制
+    if (settings.value.fps > maxFps.value) settings.value.fps = maxFps.value
     phase.value = 'ready'
   } catch (e) {
     if (token !== reqToken) return
@@ -273,6 +283,11 @@ watch(settings, () => {
   if (phase.value === 'done') phase.value = 'ready'
 }, { deep: true })
 
+// 源帧率变化 (新视频解析完成) 后, 确保输出帧率不超上限
+watch(maxFps, (m) => {
+  if (settings.value.fps > m) settings.value.fps = m
+})
+
 // 释放旧预览 URL
 watch(original, (nv, ov) => {
   if (ov && ov.url) URL.revokeObjectURL(ov.url)
@@ -297,10 +312,13 @@ watch(original, (nv, ov) => {
         <div class="setting-item">
           <span class="setting-label">帧率 FPS</span>
           <div class="slider-row">
-            <input type="range" v-model.number="settings.fps" min="1" max="30" class="slider">
+            <input type="range" v-model.number="settings.fps" min="1" :max="maxFps" class="slider">
             <span class="slider-val">{{ settings.fps }}</span>
           </div>
-          <span class="setting-unit">动图常用 10-15，越低体积越小</span>
+          <span class="setting-unit">
+            <template v-if="original && original.fps">源视频 {{ Math.round(original.fps) }}fps · 输出上限 {{ maxFps }}fps · 越低体积越小</template>
+            <template v-else>动图常用 10-15，越低体积越小</template>
+          </span>
         </div>
         <div class="setting-item">
           <span class="setting-label">输出宽度</span>
@@ -358,6 +376,10 @@ watch(original, (nv, ov) => {
           <span>{{ original.width }} × {{ original.height }}</span>
           <span class="fi-sep">·</span>
           <span>{{ formatDuration(original.duration) }}</span>
+          <template v-if="original.fps">
+            <span class="fi-sep">·</span>
+            <span>{{ Math.round(original.fps) }} fps</span>
+          </template>
         </template>
         <span class="fi-actions">
           <button v-if="uploadFailed" class="btn btn-secondary btn-small" @click="uploadFile()">重试上传</button>
