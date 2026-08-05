@@ -51,6 +51,16 @@ function writeFeedbacks(list) {
   fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(list, null, 2), 'utf-8');
 }
 
+// Basic sanitization: strip HTML tags, trim, limit length
+function sanitize(str, maxLen = 2000) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/<[^>]*>/g, '')    // strip HTML tags
+    .replace(/[<>&"']/g, '')    // strip remaining dangerous chars
+    .trim()
+    .slice(0, maxLen);
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -318,8 +328,11 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/feedback') {
       if (req.method === 'POST') {
         const body = await parseBody(req);
-        const { name, message, contact } = body;
-        if (!message || !message.trim()) { json(res, 400, { error: '请填写反馈内容' }); return; }
+        let { name, message, contact } = body;
+        name = sanitize(name, 50);
+        message = sanitize(message, 2000);
+        contact = sanitize(contact, 200);
+        if (!message) { json(res, 400, { error: '请填写反馈内容' }); return; }
         const feedbacks = readFeedbacks();
         feedbacks.unshift({
           id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -375,9 +388,22 @@ const server = http.createServer(async (req, res) => {
           const body = JSON.parse(rawBody);
           const info = parseRepo(req.headers, body);
           if (!info.branch) { json(res, 200, { message: 'Ignored (not a push)' }); return; }
-          if (info.signature && !verifyGitHubSignature(rawBody, info.signature)) {
-            log('deploy', `Invalid signature for ${info.repo}`);
-            res.writeHead(403); res.end('Invalid signature'); return;
+          // GitHub: verify HMAC signature
+          if (info.signature) {
+            if (!verifyGitHubSignature(rawBody, info.signature)) {
+              log('deploy', `Invalid signature for ${info.repo}`);
+              res.writeHead(403); res.end('Invalid signature'); return;
+            }
+          } else {
+            // Non-GitHub (Gitea/Gitee/manual): require matching secret in body
+            const giteaPass = deployConfig.gitea_secret || deployConfig.gitee_token;
+            const bodySecret = body.secret || body.password || '';
+            if (bodySecret && (bodySecret === giteaPass || bodySecret === deployConfig.github_secret)) {
+              // Gitea webhook secret / Gitee password / manual — OK
+            } else {
+              log('deploy', `Unauthorized trigger attempt for ${info.repo}`);
+              json(res, 403, { error: 'Unauthorized' }); return;
+            }
           }
           if (!info.repo) { json(res, 400, { error: 'Unknown repo' }); return; }
           const project = deployConfig.projects.find(p => p.repo === info.repo && (!p.branch || p.branch === info.branch));
