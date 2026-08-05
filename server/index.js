@@ -160,6 +160,22 @@ const convJobs = new Map();
 
 function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
 
+// 流式响应 + 一次性清理。
+// 坑: 小文件 + Content-Length + keep-alive 时, res 写完即触发 'close' (Node 18+),
+// pipe 的 onclose 会 unpipe 源流, 导致 rs 'end' 偶发不触发 (实测 ~3% 概率),
+// cleanup 不执行 → convActive 永久泄漏 → 服务假死 (429 服务繁忙)。
+// 因此以 res 'close' 为兜底触发点, cleaned 标志保证 cleanup 只执行一次。
+function pipeFileToRes(res, output, cleanup) {
+  let cleaned = false;
+  const once = () => { if (cleaned) return; cleaned = true; cleanup(); };
+  const rs = fs.createReadStream(output);
+  rs.pipe(res);
+  rs.on('end', once);
+  rs.on('error', () => { res.destroy(); once(); });
+  res.on('close', once);
+  return rs;
+}
+
 function parseConvParams(url) {
   const fmt = url.searchParams.get('fmt') === 'webp' ? 'webp' : 'gif';
   let fps = Math.round(Number(url.searchParams.get('fps')) || (fmt === 'gif' ? 10 : 12));
@@ -349,10 +365,8 @@ function handleVideo2Gif(req, res, url) {
         'Cache-Control': 'no-store',
         'X-Convert-Info': info,
       });
-      const rs = fs.createReadStream(output);
-      rs.pipe(res);
-      rs.on('end', cleanup);
-      rs.on('error', () => { res.destroy(); cleanup(); });
+      const rs = pipeFileToRes(res, output, cleanup);
+      rs.on('error', () => { res.destroy(); });
     } catch (e) {
       json(res, 500, { error: e.message || '转换失败' });
       cleanup();
@@ -442,10 +456,8 @@ function handleFrames2Gif(req, res, url) {
       'Content-Length': stat.size,
       'Cache-Control': 'no-store',
     });
-    const rs = fs.createReadStream(output);
-    rs.pipe(res);
-    rs.on('end', cleanup);
-    rs.on('error', () => { res.destroy(); cleanup(); });
+    const rs = pipeFileToRes(res, output, cleanup);
+    rs.on('error', () => { res.destroy(); });
   });
 }
 
@@ -627,10 +639,8 @@ function handleConvert(req, res, url) {
           'Cache-Control': 'no-store',
           'X-Convert-Info': info,
         });
-        const rs = fs.createReadStream(output);
-        rs.pipe(res);
-        rs.on('end', cleanup);
-        rs.on('error', () => { res.destroy(); cleanup(); });
+        const rs = pipeFileToRes(res, output, cleanup);
+        rs.on('error', () => { res.destroy(); });
       } catch (e) {
         json(res, 500, { error: e.message || '转换失败' });
         cleanup();
