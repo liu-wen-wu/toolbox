@@ -6,10 +6,14 @@ const dragOver = ref(false)
 const error = ref('')
 const converting = ref(false)
 const uploadPct = ref(0)
-const phase = ref('idle') // idle | uploading | converting | done
+const convPct = ref(0)
+// idle | uploading | parsing | ready | converting | done
+const phase = ref('idle')
+const fileId = ref('')         // 服务器保存的上传文件 ID (转换复用, 重转不重传)
+const uploadFailed = ref(false)
 
-// Original video
-const original = ref(null) // { file, url, duration, width, height }
+// Original video: 本地预览 + 服务器解析的元数据 (duration/width/height 解析后填充)
+const original = ref(null)
 // Converted result
 const result = ref(null) // { blob, url, size, info }
 
@@ -48,6 +52,9 @@ function formatDuration(secs) {
   return Math.floor(secs / 60) + 'm' + Math.round(secs % 60) + 's'
 }
 
+// 竞态保护: 换文件/重传时使旧请求结果作废
+let reqToken = 0
+
 function onDragOver(e) { e.preventDefault(); dragOver.value = true }
 function onDragLeave() { dragOver.value = false }
 function onDrop(e) {
@@ -68,6 +75,7 @@ function triggerFilePicker() {
   }
 }
 
+// 步骤 0: 本地校验 → 记录文件 → 自动进入上传
 async function loadVideo(file) {
   if (!/video\/mp4|\.mp4$/i.test(file.type + file.name)) {
     error.value = '请选择 MP4 视频文件'
@@ -79,107 +87,121 @@ async function loadVideo(file) {
   }
   error.value = ''
   result.value = null
-  phase.value = 'idle'
+  converting.value = false
+  stopPolling()
+  uploadFailed.value = false
+  fileId.value = ''
   uploadPct.value = 0
-
-  // 读取时长/分辨率 (本地元数据, 提前拦截超长视频)
-  const url = URL.createObjectURL(file)
-  const video = document.createElement('video')
-  video.preload = 'metadata'
-  const meta = await new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), 5000)
-    video.onloadedmetadata = () => { clearTimeout(timer); resolve({ duration: video.duration, width: video.videoWidth, height: video.videoHeight }) }
-    video.onerror = () => { clearTimeout(timer); resolve(null) }
-    video.src = url
-  })
-  if (!meta) {
-    URL.revokeObjectURL(url)
-    error.value = '无法读取视频信息，请确认是有效的 MP4'
-    return
-  }
-  if (meta.duration > MAX_DURATION) {
-    URL.revokeObjectURL(url)
-    error.value = `视频过长（${Math.round(meta.duration)}s），最大支持 ${MAX_DURATION} 秒`
-    return
-  }
-  original.value = { file, url, size: file.size, ...meta }
-  // 不再自动转换 — 用户确认设置后手动点「开始转换」
+  convPct.value = 0
+  const token = ++reqToken
+  original.value = { file, url: URL.createObjectURL(file), size: file.size }
+  await uploadFile(token)
 }
 
+// 步骤 1: 上传 (独立进度, 完成后服务器保存文件并返回 fileId)
+async function uploadFile(token = reqToken) {
+  if (!original.value) return
+  error.value = ''
+  uploadFailed.value = false
+  uploadPct.value = 0
+  phase.value = 'uploading'
+  try {
+    const d = await uploadXhrJson('/api/video2gif/upload', original.value.file.type || 'video/mp4', original.value.file)
+    if (token !== reqToken) return // 已被新选择取代
+    fileId.value = d.fileId
+    await parseVideo(token)
+  } catch (e) {
+    if (token !== reqToken) return
+    error.value = e.message || '上传失败，请重试'
+    uploadFailed.value = true
+    phase.value = 'idle'
+  }
+}
+
+// 步骤 2: 解析 (服务器 ffmpeg 探测时长/分辨率)
+async function parseVideo(token) {
+  phase.value = 'parsing'
+  try {
+    const r = await fetch(`/api/video2gif/parse?file=${encodeURIComponent(fileId.value)}`, { cache: 'no-store' })
+    const d = await r.json().catch(() => ({}))
+    if (token !== reqToken) return
+    if (!r.ok) throw new Error(d.error || '解析失败')
+    original.value.duration = d.duration
+    original.value.width = d.width
+    original.value.height = d.height
+    phase.value = 'ready'
+  } catch (e) {
+    if (token !== reqToken) return
+    error.value = e.message || '解析失败，请重新选择视频'
+    uploadFailed.value = true
+    phase.value = 'idle'
+  }
+}
+
+// 步骤 3: 转换 (复用已上传文件, 参数调整后重转无需重新上传)
 async function convert() {
-  if (!original.value || converting.value) return
+  if (!fileId.value || converting.value) return
   error.value = ''
   result.value = null
   converting.value = true
-  phase.value = 'extracting'
-  uploadPct.value = 0
   convPct.value = 0
-  framePct.value = 0
-
+  phase.value = 'converting'
   const s = settings.value
-  // 前端生成 jobId, 服务端用它登记转换进度 (轮询用)
   const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
-  const params = new URLSearchParams({
-    fmt: s.fmt,
-    fps: String(s.fps),
-    width: String(s.width),
-    lossless: s.lossless ? '1' : '0',
-    quality: String(s.quality),
-    job: jobId,
-  })
-
+  const token = reqToken
   startPolling(jobId)
-
   try {
-    // 优先浏览器抽帧 (上传量小 20 倍, 服务器免解码); 失败回退整文件上传
-    let body, ctype
-    try {
-      const frames = await extractFrames(original.value.file, s.fps, s.width, s.lossless)
-      body = frames.blob
-      ctype = 'application/octet-stream'
-      if (body.size < original.value.size) {
-        phase.value = 'uploading'
-        uploadPct.value = 0
-        const blob = await uploadXhr('/api/video2gif/frames?' + params.toString(), ctype, body)
-        const url = URL.createObjectURL(blob)
-        result.value = { blob, url, size: blob.size }
-        phase.value = 'done'
-        return
-      }
-      // 帧包反而更大 (极短视频) → 走整文件
-      console.log('[video2gif] frames bigger than source, fallback to full upload')
-    } catch (e) {
-      console.log('[video2gif] extract fail, fallback:', e.message)
-    }
-
-    phase.value = 'uploading'
-    uploadPct.value = 0
-    const blob = await uploadXhr('/api/video2gif?' + params.toString(), original.value.file.type || 'video/mp4', original.value.file)
+    const blob = await postJsonBlob('/api/video2gif/convert', {
+      file: fileId.value,
+      fmt: s.fmt,
+      fps: s.fps,
+      width: s.width,
+      lossless: s.lossless,
+      quality: s.quality,
+      job: jobId,
+    })
+    if (token !== reqToken) return // 转换期间已更换视频, 结果作废
     const url = URL.createObjectURL(blob)
     result.value = { blob, url, size: blob.size }
     phase.value = 'done'
   } catch (e) {
+    if (token !== reqToken) return // 转换期间已更换视频, 忽略失败
     error.value = e.message || '转换失败'
-    phase.value = 'idle'
+    phase.value = 'ready'
   } finally {
-    converting.value = false
-    stopPolling()
+    if (token === reqToken) {
+      converting.value = false
+      stopPolling()
+    }
   }
 }
 
-// 统一上传 (返回响应 blob, 错误解析 JSON)
-function uploadXhr(url, contentType, body) {
+// 上传 → JSON 响应 (上传进度写入 uploadPct)
+function uploadXhrJson(url, contentType, body) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', url)
     xhr.setRequestHeader('Content-Type', contentType)
-    xhr.responseType = 'blob'
+    xhr.responseType = 'json'
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        uploadPct.value = e.loaded / e.total
-        if (uploadPct.value >= 1) phase.value = 'converting'
-      }
+      if (e.lengthComputable) uploadPct.value = e.loaded / e.total
     }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response)
+      else reject(new Error((xhr.response && xhr.response.error) || '上传失败'))
+    }
+    xhr.onerror = () => reject(new Error('网络错误，请重试'))
+    xhr.send(body)
+  })
+}
+
+// POST JSON → 文件 blob (错误解析 JSON)
+function postJsonBlob(url, data) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.setRequestHeader('Content-Type', 'application/json')
+    xhr.responseType = 'blob'
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response)
       else {
@@ -191,112 +213,14 @@ function uploadXhr(url, contentType, body) {
       }
     }
     xhr.onerror = () => reject(new Error('网络错误，请重试'))
-    xhr.send(body)
-  })
-}
-
-// ---- 浏览器抽帧: 播放视频按 fps 抽帧, 打包为 [u32BE 帧长][帧数据]... ----
-const framePct = ref(0)
-
-function extractFrames(file, fps, width, lossless) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file)
-    const video = document.createElement('video')
-    video.muted = true
-    video.playsInline = true
-    video.preload = 'auto'
-    video.src = url
-
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d', { willReadFrequently: false })
-    const parts = []
-    let count = 0
-    let lastTime = -1
-    let busy = false
-    let pending = 0
-    let done = false
-
-    const calcSize = (vw, vh) => {
-      let w = width > 0 ? Math.min(width, vw) : Math.min(vw, 1280)
-      let h = Math.round(w * vh / vw)
-      if (h % 2) h++
-      return { w, h }
-    }
-
-    const grab = async () => {
-      pending++
-      try {
-        const { w, h } = calcSize(video.videoWidth, video.videoHeight)
-        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
-        ctx.drawImage(video, 0, 0, w, h)
-        const blob = await new Promise(r => canvas.toBlob(r, lossless ? 'image/png' : 'image/jpeg', lossless ? undefined : 0.9))
-        if (!blob) return
-        const head = new Uint8Array(4)
-        new DataView(head.buffer).setUint32(0, blob.size)
-        parts.push(head, blob)
-        count++
-        framePct.value = Math.min(99, Math.round(count / (video.duration * fps) * 100))
-      } finally {
-        pending--
-      }
-    }
-
-    video.ontimeupdate = () => {
-      if (done || busy) return
-      if (video.currentTime - lastTime >= 1 / fps) {
-        lastTime = video.currentTime
-        busy = true
-        grab().finally(() => { busy = false })
-      }
-    }
-
-    video.onloadedmetadata = () => {
-      if (video.duration > MAX_DURATION) {
-        URL.revokeObjectURL(url)
-        reject(new Error(`视频过长（${Math.round(video.duration)}s）`))
-      }
-      video.play().catch(() => {
-        URL.revokeObjectURL(url)
-        reject(new Error('浏览器无法播放该视频，已回退整文件上传'))
-      })
-    }
-
-    const finish = () => {
-      if (done) return
-      done = true
-      video.pause()
-      URL.revokeObjectURL(url)
-      const blob = new Blob(parts, { type: 'application/octet-stream' })
-      resolve({ blob, count })
-    }
-
-    video.onended = async () => {
-      if (video.currentTime - lastTime >= 0.3) await grab() // 补最后一帧
-      while (pending > 0) await new Promise(r => setTimeout(r, 50))
-      finish()
-    }
-    video.onerror = () => {
-      URL.revokeObjectURL(url)
-      reject(new Error('视频解码失败'))
-    }
-
-    // 超时保护: 视频时长 + 45s
-    setTimeout(() => {
-      if (!done) {
-        video.pause()
-        URL.revokeObjectURL(url)
-        reject(new Error('抽帧超时'))
-      }
-    }, (Math.min(file.size / 1024, 120) * 1000) + 45000)
+    xhr.send(JSON.stringify(data))
   })
 }
 
 // ---- 转换进度轮询 ----
-const convPct = ref(0)
 let pollTimer = null
 
 const barWidth = computed(() => {
-  if (phase.value === 'extracting') return framePct.value
   if (phase.value === 'uploading') return Math.round(uploadPct.value * 100)
   return convPct.value
 })
@@ -309,7 +233,6 @@ function startPolling(jobId) {
       if (!r.ok) return // 404 → job 已清理, 等 XHR 结果即可
       const d = await r.json()
       convPct.value = d.progress || 0
-      if (d.status === 'converting' && phase.value === 'uploading') phase.value = 'converting'
     } catch { /* 网络抖动忽略 */ }
   }, 500)
 }
@@ -317,7 +240,6 @@ function startPolling(jobId) {
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
-
 onUnmounted(stopPolling)
 
 function download() {
@@ -344,16 +266,23 @@ const fmtHint = computed(() => {
     : '动画 WebP 支持真彩色，同清晰度下体积通常比 GIF 小 40-60%'
 })
 
-// 配置变更后, 旧转换结果失效 (需重新转换)
+// 配置变更后: 旧转换结果失效, 回到就绪态 (文件已上传, 无需重传)
 watch(settings, () => {
+  if (converting.value) return
   if (result.value) result.value = null
+  if (phase.value === 'done') phase.value = 'ready'
 }, { deep: true })
+
+// 释放旧预览 URL
+watch(original, (nv, ov) => {
+  if (ov && ov.url) URL.revokeObjectURL(ov.url)
+})
 </script>
 
 <template>
   <div>
     <h1 data-index="06">MP4 转动图</h1>
-    <p class="description">将 MP4 视频转换为 GIF 或动画 WebP，服务端 ffmpeg 高效转换，WebP 支持无损模式。先选配置，再传视频，确认后转换。</p>
+    <p class="description">将 MP4 视频转换为 GIF 或动画 WebP。上传 → 解析 → 转换 三步独立，文件只需上传一次，调整参数后重新转换无需重复上传。</p>
 
     <!-- Settings (始终可见, 先选配置) -->
     <div class="tool-box">
@@ -410,7 +339,7 @@ watch(settings, () => {
     >
       <div class="drop-icon">MP4</div>
       <div class="drop-text">拖拽视频到此处，或点击选择文件</div>
-      <div class="drop-hint">支持 MP4 · 最长 120 秒 · 最大 100MB</div>
+      <div class="drop-hint">支持 MP4 · 最长 120 秒 · 最大 100MB · 上传后自动解析</div>
     </div>
     <!-- Hidden file input: always in DOM -->
     <input ref="fileInput" type="file" accept="video/mp4,video/*" style="display:none" @change="onFileSelect">
@@ -419,22 +348,44 @@ watch(settings, () => {
     <div v-if="error" class="inline-error">{{ error }}</div>
 
     <template v-if="original">
-      <!-- Original file info -->
+      <!-- File info bar -->
       <div class="tool-box file-info">
         <span class="fi-name">{{ original.file.name }}</span>
         <span class="fi-sep">·</span>
         <span>{{ formatSize(original.size) }}</span>
-        <span class="fi-sep">·</span>
-        <span>{{ original.width }} × {{ original.height }}</span>
-        <span class="fi-sep">·</span>
-        <span>{{ formatDuration(original.duration) }}</span>
+        <template v-if="original.duration != null">
+          <span class="fi-sep">·</span>
+          <span>{{ original.width }} × {{ original.height }}</span>
+          <span class="fi-sep">·</span>
+          <span>{{ formatDuration(original.duration) }}</span>
+        </template>
         <span class="fi-actions">
+          <button v-if="uploadFailed" class="btn btn-secondary btn-small" @click="uploadFile()">重试上传</button>
           <button class="btn btn-secondary btn-small" @click="triggerFilePicker">更换视频</button>
         </span>
       </div>
 
-      <!-- 待转换: 原视频预览 + 开始按钮 -->
-      <template v-if="!converting && !result">
+      <!-- 上传中 -->
+      <div v-if="phase === 'uploading'" class="tool-box" style="text-align:center;padding:40px;">
+        <div class="spin-icon"></div>
+        <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">
+          正在上传视频 {{ Math.round(uploadPct * 100) }}%
+        </p>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: barWidth + '%' }"></div>
+        </div>
+        <p class="conv-info">上传完成后自动解析视频信息</p>
+      </div>
+
+      <!-- 解析中 -->
+      <div v-if="phase === 'parsing'" class="tool-box" style="text-align:center;padding:40px;">
+        <div class="spin-icon"></div>
+        <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">正在解析视频信息（时长 / 分辨率）...</p>
+        <p class="conv-info">解析完成后即可调整参数并转换，无需重复上传</p>
+      </div>
+
+      <!-- 就绪: 原视频预览 + 开始转换 -->
+      <template v-if="phase === 'ready'">
         <div class="tool-box compare-card">
           <label>原始视频</label>
           <div class="img-wrap">
@@ -458,25 +409,25 @@ watch(settings, () => {
         </div>
       </template>
 
-      <!-- Converting State -->
-      <div v-if="converting" class="tool-box" style="text-align:center;padding:40px;">
+      <!-- 转换中 -->
+      <div v-if="phase === 'converting'" class="tool-box" style="text-align:center;padding:40px;">
         <div class="spin-icon"></div>
         <p style="margin-top:12px;color:var(--vp-c-text-3);font-size:14px;">
-          <template v-if="phase === 'extracting'">正在解析视频 {{ framePct }}%（浏览器本地）</template>
-          <template v-else-if="phase === 'uploading'">正在上传 {{ Math.round(uploadPct * 100) }}%</template>
-          <template v-else>正在转换 {{ convPct }}% ...</template>
+          正在转换 {{ convPct }}% ...
         </p>
         <div class="progress-bar">
           <div class="progress-fill" :style="{ width: barWidth + '%' }"></div>
         </div>
         <p class="conv-info">
-          原始 {{ formatSize(original.size) }} · {{ formatDuration(original.duration) }} · {{ original.width }}×{{ original.height }}
-          → {{ settings.fmt === 'gif' ? 'GIF' : 'WebP' }} {{ settings.fps }}fps
+          {{ settings.fmt === 'gif' ? 'GIF' : 'WebP' }} {{ settings.fps }}fps
+          <template v-if="original.duration != null">
+            · {{ formatDuration(original.duration) }} · {{ original.width }}×{{ original.height }}
+          </template>
         </p>
       </div>
 
-      <!-- Comparison -->
-      <template v-if="!converting">
+      <!-- 完成: 对比 + 下载 -->
+      <template v-if="phase === 'done'">
         <div class="compare-grid">
           <div class="tool-box compare-card">
             <label>原始视频</label>
@@ -492,7 +443,7 @@ watch(settings, () => {
             </div>
           </div>
 
-          <div class="tool-box compare-card" v-if="result">
+          <div class="tool-box compare-card">
             <label>转换结果</label>
             <div class="img-wrap">
               <img :src="result.url" alt="converted animation">
@@ -516,7 +467,7 @@ watch(settings, () => {
         </div>
 
         <!-- Actions -->
-        <div class="action-bar" v-if="result">
+        <div class="action-bar">
           <button class="btn btn-primary" @click="download">
             下载{{ settings.fmt === 'gif' ? ' GIF' : ' WebP' }}
           </button>
@@ -591,6 +542,8 @@ watch(settings, () => {
 }
 .fi-actions {
   margin-left: auto;
+  display: flex;
+  gap: 8px;
 }
 
 .conv-info {
@@ -599,7 +552,6 @@ watch(settings, () => {
   font-size: 12px;
   color: var(--vp-c-text-4);
 }
-
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

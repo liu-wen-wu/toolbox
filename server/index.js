@@ -450,6 +450,190 @@ function handleFrames2Gif(req, res, url) {
 }
 
 // ======================================================================
+// VIDEO2GIF 上传/解析/转换 解耦 (upload → parse → convert)
+// 上传保存原始文件并返回 fileId; 解析探测元数据; 转换复用已上传文件,
+// 参数调整后重转无需重新上传。上传文件 30 分钟 TTL, 定期清理。
+// ======================================================================
+const UPLOAD_TTL = 30 * 60 * 1000;          // 上传文件保留 30 分钟
+const FILE_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+
+function uploadPath(fileId) { return path.join('/tmp', `v2g-${fileId}.mp4`); }
+function convOutPath(fileId, fmt, jobId) { return path.join('/tmp', `v2g-${fileId}-${jobId}.${fmt}`); }
+
+// 定期清理过期上传/输出文件
+setInterval(() => {
+  const cutoff = Date.now() - UPLOAD_TTL;
+  let removed = 0;
+  try {
+    for (const f of fs.readdirSync('/tmp')) {
+      if (!f.startsWith('v2g-')) continue;
+      const p = path.join('/tmp', f);
+      try { if (fs.statSync(p).mtimeMs < cutoff) { fs.unlinkSync(p); removed++; } } catch {}
+    }
+    if (removed) log('conv', `sweep: removed ${removed} expired v2g files`);
+  } catch {}
+}, 5 * 60 * 1000);
+
+// 探测时长 + 分辨率 (ffmpeg 读容器头, 只解码 1 秒)
+function probeMeta(input) {
+  return new Promise((resolve) => {
+    const p = spawn(FFMPEG, ['-hide_banner', '-i', input, '-t', '1', '-f', 'null', '-']);
+    let stderr = '';
+    p.stderr.on('data', d => { stderr += d.toString(); });
+    p.on('close', () => {
+      const dm = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!dm) { resolve(null); return; }
+      const duration = Number(dm[1]) * 3600 + Number(dm[2]) * 60 + Number(dm[3]);
+      const vm = stderr.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+      resolve({
+        duration,
+        width: vm ? Number(vm[1]) : null,
+        height: vm ? Number(vm[2]) : null,
+      });
+    });
+    p.on('error', () => resolve(null));
+  });
+}
+
+// 步骤 1: 纯上传 (流式写入, 只限大小; 有效性留给解析步骤)
+function handleUpload(req, res) {
+  const fileId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const input = uploadPath(fileId);
+  let received = 0;
+  let aborted = false;
+  const ws = fs.createWriteStream(input);
+  ws.on('error', () => {}); // 中止时 destroy 可能触发 writev error, 吞噬即可
+
+  function cleanup() {
+    ws.destroy();
+    if (aborted) fs.unlink(input, () => {});
+  }
+
+  req.on('data', c => {
+    if (aborted) return;
+    received += c.length;
+    if (received > CONV_MAX_BYTES) {
+      aborted = true;
+      json(res, 413, { error: '文件过大，最大支持 100MB' });
+      res.on('finish', () => req.destroy());
+      cleanup();
+      return;
+    }
+    ws.write(c);
+  });
+  req.on('error', () => { if (!aborted) { aborted = true; cleanup(); } });
+  req.on('end', async () => {
+    if (aborted) return;
+    await new Promise(r => ws.end(r));
+    if (received === 0) {
+      json(res, 422, { error: '未收到文件数据' });
+      fs.unlink(input, () => {});
+      return;
+    }
+    log('conv', `upload ${fileId} ${(received / 1024 / 1024).toFixed(1)}MB`);
+    json(res, 200, { fileId, size: received });
+  });
+}
+
+// 步骤 2: 解析元数据 (时长/分辨率), 顺带校验有效性
+function handleParse(req, res, url) {
+  const fileId = (url.searchParams.get('file') || '').match(FILE_ID_RE)?.[0];
+  if (!fileId) { json(res, 400, { error: '无效的文件 ID' }); return; }
+  const input = uploadPath(fileId);
+  if (!fs.existsSync(input)) { json(res, 404, { error: '文件不存在或已过期，请重新上传' }); return; }
+  probeMeta(input).then(meta => {
+    if (!meta) { json(res, 422, { error: '无法解析视频，请确认是有效的 MP4 文件' }); return; }
+    if (meta.duration > CONV_MAX_DURATION) {
+      json(res, 422, { error: `视频过长（${Math.round(meta.duration)}s），最大支持 ${CONV_MAX_DURATION} 秒` });
+      return;
+    }
+    log('conv', `parse ${fileId} ${Math.round(meta.duration)}s ${meta.width}x${meta.height}`);
+    json(res, 200, meta);
+  });
+}
+
+// 步骤 3: 用已上传文件转换 (body: { file, fmt, fps, width, lossless, quality, job })
+function handleConvert(req, res, url) {
+  if (convActive >= CONV_MAX_CONCURRENT) {
+    json(res, 429, { error: '服务繁忙，请稍后再试' });
+    return;
+  }
+  parseBody(req).then(body => {
+    const fileId = String(body.file || '').match(FILE_ID_RE)?.[0];
+    if (!fileId) { json(res, 400, { error: '无效的文件 ID' }); return; }
+    const input = uploadPath(fileId);
+    if (!fs.existsSync(input)) { json(res, 404, { error: '文件不存在或已过期，请重新上传' }); return; }
+
+    const params = {
+      fmt: body.fmt === 'webp' ? 'webp' : 'gif',
+      fps: clamp(Math.round(Number(body.fps)) || 10, 1, 30),
+      width: (() => { const w = Math.round(Number(body.width)) || 0; return w === 0 ? 0 : clamp(w, 16, CONV_MAX_WIDTH); })(),
+      lossless: body.lossless === true || body.lossless === '1' || body.lossless === 1,
+      quality: clamp(Math.round(Number(body.quality)) || 75, 1, 100),
+    };
+    const jobMatch = String(body.job || '').match(/^[A-Za-z0-9-]{8,64}$/);
+    const jobId = jobMatch ? jobMatch[0] : `j-${fileId}`;
+    const output = convOutPath(fileId, params.fmt, jobId);
+    const setJob = (progress, status) => { convJobs.set(jobId, { progress, status, ts: Date.now() }); };
+    setJob(0, 'converting');
+    convActive++;
+    log('conv', `convert ${fileId} ${params.fmt} fps=${params.fps} w=${params.width || 'auto'} lossless=${params.lossless} start`);
+
+    function cleanup() {
+      convActive--;
+      convJobs.delete(jobId);
+      fs.unlink(output, () => {});
+    }
+
+    (async () => {
+      try {
+        const meta = await probeMeta(input);
+        if (!meta) { json(res, 422, { error: '无法解析视频，请确认是有效的 MP4 文件' }); cleanup(); return; }
+        if (meta.duration > CONV_MAX_DURATION) {
+          json(res, 422, { error: `视频过长（${Math.round(meta.duration)}s），最大支持 ${CONV_MAX_DURATION} 秒` });
+          cleanup(); return;
+        }
+        // GIF 两遍调色板: 第一遍 0-50%, 第二遍 50-100% (out_time 回退表示进入第二遍)
+        // WebP 单遍: 0-100%
+        let phase2 = false;
+        let lastT = 0;
+        const err = await convertVideo(input, output, params, (t) => {
+          if (t < lastT - 0.05) phase2 = true;
+          lastT = t;
+          const ratio = Math.min(1, Math.max(0, t / meta.duration));
+          const p = params.fmt === 'gif' && !phase2 ? ratio * 50 : (params.fmt === 'gif' ? 50 + ratio * 50 : ratio * 100);
+          setJob(Math.round(p), 'converting');
+        });
+        if (err) { setJob(0, 'error'); json(res, 500, { error: err }); cleanup(); return; }
+        setJob(100, 'done');
+        const stat = fs.statSync(output);
+        const info = JSON.stringify({
+          inSize: fs.statSync(input).size, outSize: stat.size,
+          duration: Math.round(meta.duration * 10) / 10,
+          fps: params.fps, lossless: params.lossless, fmt: params.fmt,
+        });
+        log('conv', `convert done ${fileId} ${params.fmt} ${Math.round(meta.duration)}s → ${(stat.size / 1024).toFixed(0)}KB`);
+        res.writeHead(200, {
+          'Content-Type': params.fmt === 'gif' ? 'image/gif' : 'image/webp',
+          'Content-Length': stat.size,
+          'Cache-Control': 'no-store',
+          'X-Convert-Info': info,
+        });
+        const rs = fs.createReadStream(output);
+        rs.pipe(res);
+        rs.on('end', cleanup);
+        rs.on('error', () => { res.destroy(); cleanup(); });
+      } catch (e) {
+        json(res, 500, { error: e.message || '转换失败' });
+        cleanup();
+      }
+    })();
+  }).catch(e => {
+    json(res, 400, { error: '请求体解析失败' });
+  });
+}
+
+// ======================================================================
 // Helpers
 // ======================================================================
 function json(res, status, data) {
@@ -524,7 +708,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // === VIDEO2GIF: MP4 → GIF / 动画 WebP ===
+    // === VIDEO2GIF UPLOAD: 独立上传步骤 ===
+    if (pathname === '/video2gif/upload') {
+      if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }); return; }
+      handleUpload(req, res);
+      return;
+    }
+
+    // === VIDEO2GIF PARSE: 独立解析步骤 ===
+    if (pathname === '/video2gif/parse') {
+      if (req.method !== 'GET') { json(res, 405, { error: 'Method not allowed' }); return; }
+      handleParse(req, res, url);
+      return;
+    }
+
+    // === VIDEO2GIF CONVERT: 用已上传文件转换 ===
+    if (pathname === '/video2gif/convert') {
+      if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }); return; }
+      handleConvert(req, res, url);
+      return;
+    }
+
+    // === VIDEO2GIF: MP4 → GIF / 动画 WebP (旧版整文件一步式, 兼容保留) ===
     if (pathname === '/video2gif') {
       if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }); return; }
       handleVideo2Gif(req, res, url);
